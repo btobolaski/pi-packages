@@ -55,8 +55,8 @@ Relevant modules and facts:
 
 Constraints from `AGENTS.md` and skills:
 
-- Public API documentation: a new cross-extension export must be documented for third-party authors, not just typed ([code-design] skill).
-- Library functions must not read `process.cwd()` / `process.env` internally — accept them as parameters ([code-design] skill).
+- Public API documentation: a new cross-extension export must be documented for third-party authors, not just typed (the former repository-local `code-design` skill).
+- Library functions must not read `process.cwd()` / `process.env` internally — accept them as parameters (the former repository-local `code-design` skill).
   The new helper takes `agentDir` and `cwd` explicitly (no `process.cwd()` default), matching the only caller, which already passes `this.cwd`.
 - The published `dist/*.d.ts` must be self-contained (no `#src/*`) — the harness gates on it.
   The helper imports only `node:fs` / `node:path` and is generic over `T`, so its rolled declaration is trivially self-contained.
@@ -220,4 +220,3 @@ No new pin is needed.
 
 [#380]: https://github.com/gotgenes/pi-packages/issues/380
 [ADR-0003]: ../decisions/0003-publish-bundled-type-declarations.md
-[code-design]: ../../../../.pi/skills/code-design/SKILL.md

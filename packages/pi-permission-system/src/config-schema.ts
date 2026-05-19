@@ -57,6 +57,51 @@ const patternValueSchema = z.union([
   denyWithReasonSchema,
 ]);
 
+const preToolUseHookCommandSchema = z.strictObject({
+  type: z.literal("command"),
+  if: z.string().trim().min(1).optional().meta({
+    description:
+      "Optional Tool(pattern) condition evaluated against the tool input.",
+  }),
+  command: z.string().trim().min(1).meta({
+    description: "Shell command executed for this hook.",
+  }),
+  timeout: z.number().positive().optional().meta({
+    description: "Hook timeout in seconds. Defaults to 10 seconds.",
+  }),
+});
+
+const preToolUseHookMatcherSchema = z.strictObject({
+  matcher: z
+    .string()
+    .trim()
+    .min(1)
+    .refine(
+      (matcher) => {
+        try {
+          new RegExp(matcher);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: "Hook matcher must be a valid regular expression." },
+    )
+    .meta({
+      description:
+        "Regular expression matched against the Claude Code-compatible tool name.",
+    }),
+  hooks: z.array(preToolUseHookCommandSchema).min(1),
+});
+
+const hooksSchema = z
+  .strictObject({
+    PreToolUse: z.array(preToolUseHookMatcherSchema).min(1).optional(),
+  })
+  .meta({
+    description: "Claude Code-compatible tool lifecycle hooks.",
+  });
+
 const permissionMapSchema = z
   .record(
     z.string().min(1).meta({
@@ -180,6 +225,12 @@ export const unifiedConfigSchema = z
         "Auto-approve `ask`-state permission checks, including subagent approval forwarding.\n\n⚠️ **Use with caution** — this disables all interactive confirmation prompts.",
       default: false,
     }),
+    allowLocalEdits: z.boolean().optional().meta({
+      description:
+        "Select the acceptEdits permission mode passed to PreToolUse hooks. This setting does not auto-approve tool calls.",
+      default: false,
+    }),
+    hooks: hooksSchema.optional(),
     doublePressToConfirm: z.boolean().optional().meta({
       description:
         "Require a confirming second press of a decision hotkey in the inline permission dialog. Applies to TUI sessions only.",

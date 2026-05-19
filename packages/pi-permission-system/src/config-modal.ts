@@ -51,6 +51,7 @@ function cloneDefaultConfig(): PermissionSystemExtensionConfig {
     debugLog: DEFAULT_EXTENSION_CONFIG.debugLog,
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
+    allowLocalEdits: DEFAULT_EXTENSION_CONFIG.allowLocalEdits,
     doublePressToConfirm: DEFAULT_EXTENSION_CONFIG.doublePressToConfirm,
   };
 }
@@ -79,6 +80,7 @@ function summarizeConfig(
 ): string {
   const knobs = [
     `yoloMode=${toOnOff(config.yoloMode)}`,
+    `allowLocalEdits=${toOnOff(config.allowLocalEdits)}`,
     `permissionReviewLog=${toOnOff(config.permissionReviewLog)}`,
     `debugLog=${toOnOff(config.debugLog)}`,
   ].join(", ");
@@ -96,6 +98,14 @@ function buildSettingItems(
       description:
         "Auto-approve ask-state permission checks, including subagent approval forwarding",
       currentValue: toOnOff(config.yoloMode),
+      values: ON_OFF,
+    },
+    {
+      id: "allowLocalEdits",
+      label: "Hook edit mode",
+      description:
+        "Pass acceptEdits instead of default as the PreToolUse hook permission mode",
+      currentValue: toOnOff(config.allowLocalEdits),
       values: ON_OFF,
     },
     {
@@ -133,6 +143,8 @@ function applySetting(
   switch (id) {
     case "yoloMode":
       return { ...config, yoloMode: value === "on" };
+    case "allowLocalEdits":
+      return { ...config, allowLocalEdits: value === "on" };
     case "permissionReviewLog":
       return { ...config, permissionReviewLog: value === "on" };
     case "debugLog":
@@ -149,6 +161,7 @@ function syncSettingValues(
   config: PermissionSystemExtensionConfig,
 ): void {
   settingsList.updateValue("yoloMode", toOnOff(config.yoloMode));
+  settingsList.updateValue("allowLocalEdits", toOnOff(config.allowLocalEdits));
   settingsList.updateValue(
     "permissionReviewLog",
     toOnOff(config.permissionReviewLog),

@@ -336,6 +336,11 @@ describe("ConfigStore", () => {
         expect.stringContaining('"debugLog": true'),
         "utf-8",
       );
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        expect.stringContaining(".tmp"),
+        expect.stringContaining('"allowLocalEdits": false'),
+        "utf-8",
+      );
       expect(mockRenameSync).toHaveBeenCalled();
     });
 

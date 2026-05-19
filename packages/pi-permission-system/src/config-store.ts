@@ -155,6 +155,7 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       debugLog: normalized.debugLog,
       permissionReviewLog: normalized.permissionReviewLog,
       yoloMode: normalized.yoloMode,
+      allowLocalEdits: normalized.allowLocalEdits,
     };
 
     const tmpPath = `${globalPath}.tmp`;
@@ -186,6 +187,7 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       debugLog: normalized.debugLog,
       permissionReviewLog: normalized.permissionReviewLog,
       yoloMode: normalized.yoloMode,
+      allowLocalEdits: normalized.allowLocalEdits,
     });
   }
 

@@ -1,6 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeHooksConfig } from "#src/hook-normalize";
+import type { HooksConfig } from "#src/hook-types";
 import type {
   ShellToolsConfig,
   UnifiedPermissionConfig,
@@ -16,6 +18,10 @@ export interface PermissionSystemExtensionConfig {
   debugLog: boolean;
   permissionReviewLog: boolean;
   yoloMode: boolean;
+  /** Select the Claude Code acceptEdits mode passed to PreToolUse hooks; does not auto-approve tools. */
+  allowLocalEdits: boolean;
+  /** Normalized Claude Code-compatible lifecycle hooks. */
+  hooks?: HooksConfig;
   /** Require a confirming second press of a decision hotkey in the inline TUI dialog. Defaults to true. */
   doublePressToConfirm: boolean;
   /** Additional directories to auto-allow for reads as Pi infrastructure. */
@@ -36,6 +42,7 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   debugLog: false,
   permissionReviewLog: true,
   yoloMode: false,
+  allowLocalEdits: false,
   doublePressToConfirm: true,
 };
 
@@ -68,8 +75,13 @@ export function normalizePermissionSystemConfig(
     debugLog: raw.debugLog === true,
     permissionReviewLog: raw.permissionReviewLog !== false,
     yoloMode: raw.yoloMode === true,
+    allowLocalEdits: raw.allowLocalEdits === true,
     doublePressToConfirm: raw.doublePressToConfirm !== false,
   };
+  const hooks = normalizeHooksConfig(raw.hooks);
+  if (hooks !== undefined) {
+    result.hooks = hooks;
+  }
   if (raw.piInfrastructureReadPaths !== undefined) {
     result.piInfrastructureReadPaths = raw.piInfrastructureReadPaths;
   }

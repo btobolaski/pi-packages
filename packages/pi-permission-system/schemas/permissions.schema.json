@@ -25,6 +25,64 @@
       "default": false,
       "type": "boolean"
     },
+    "allowLocalEdits": {
+      "description": "Select the acceptEdits permission mode passed to PreToolUse hooks. This setting does not auto-approve tool calls.",
+      "default": false,
+      "type": "boolean"
+    },
+    "hooks": {
+      "type": "object",
+      "properties": {
+        "PreToolUse": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "matcher": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Regular expression matched against the Claude Code-compatible tool name."
+              },
+              "hooks": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "command"
+                    },
+                    "if": {
+                      "description": "Optional Tool(pattern) condition evaluated against the tool input.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Shell command executed for this hook."
+                    },
+                    "timeout": {
+                      "description": "Hook timeout in seconds. Defaults to 10 seconds.",
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    }
+                  },
+                  "required": ["type", "command"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": ["matcher", "hooks"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false,
+      "description": "Claude Code-compatible tool lifecycle hooks."
+    },
     "doublePressToConfirm": {
       "description": "Require a confirming second press of a decision hotkey in the inline permission dialog. Applies to TUI sessions only.",
       "markdownDescription": "Require a confirming second press of a decision hotkey (`y`/`s`/`n`/`r`) in the inline permission dialog before it commits — the first press arms the action and shows a `Press y again to approve.` hint.\n\nApplies to interactive **TUI** sessions only; the non-TUI (RPC/frontend) prompt keeps its single-select flow. Set to `false` to commit decisions on the first hotkey press.",

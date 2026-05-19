@@ -133,6 +133,7 @@ test("permission-system command handlers manage config summary, persistence, and
     debugLog: true,
     permissionReviewLog: false,
     yoloMode: true,
+    allowLocalEdits: true,
     doublePressToConfirm: true,
   };
 
@@ -193,6 +194,9 @@ test("permission-system command handlers manage config summary, persistence, and
     await definition!.handler("show", infoCtx.ctx);
     expect(lastNotification(infoCtx.notifications).message).toContain(
       "yoloMode=on",
+    );
+    expect(lastNotification(infoCtx.notifications).message).toContain(
+      "allowLocalEdits=on",
     );
     expect(lastNotification(infoCtx.notifications).message).toContain(
       "debugLog=on",

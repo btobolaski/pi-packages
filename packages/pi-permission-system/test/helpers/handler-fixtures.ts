@@ -12,6 +12,7 @@ import { vi } from "vitest";
 
 import type { ResolvedAccessIntent } from "#src/access-intent/access-intent";
 import type { AskEscalator } from "#src/authority/authorizer-selection";
+import { WebAccessPrompter } from "#src/authority/web-access-prompter";
 import { GateDecisionReporter } from "#src/decision-reporter";
 import { GateRunner } from "#src/handlers/gates/runner";
 import {
@@ -23,6 +24,7 @@ import {
   ToolCallGatePipeline,
 } from "#src/handlers/gates/tool-call-gate-pipeline";
 import { PermissionGateHandler } from "#src/handlers/permission-gate-handler";
+import { ToolCallOverrides } from "#src/handlers/tool-call-overrides";
 import type { PermissionDecisionEvent } from "#src/permission-events";
 import { PERMISSIONS_DECISION_CHANNEL } from "#src/permission-events";
 import type { Rule } from "#src/rule";
@@ -293,9 +295,22 @@ export function makeHandler(overrides?: {
       : makeToolRegistry(overrides?.toolRegistry);
 
   const recorder = new SessionRules();
-  const pipeline = new ToolCallGatePipeline(resolver, session);
-  const skillInputPipeline = new SkillInputGatePipeline(resolver);
   const reporter = new GateDecisionReporter(logger, events);
+  const webAccessPrompter = new WebAccessPrompter(logger, events);
+  const toolCallOverrides = new ToolCallOverrides(
+    session,
+    webAccessPrompter,
+    reporter,
+    logger,
+  );
+  const pipeline = new ToolCallGatePipeline(
+    resolver,
+    session,
+    undefined,
+    undefined,
+    toolCallOverrides,
+  );
+  const skillInputPipeline = new SkillInputGatePipeline(resolver);
   const prompter: AskEscalator = overrides?.prompter ?? {
     escalate: vi
       .fn<AskEscalator["escalate"]>()

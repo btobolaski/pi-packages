@@ -492,6 +492,51 @@ describe("mergeUnifiedConfigs", () => {
     expect(merged.yoloMode).toBe(true);
   });
 
+  it("replaces local-edit and web-access flags from the higher-precedence scope", () => {
+    const merged = mergeUnifiedConfigs(
+      { allowLocalEdits: false, allowWebAccess: true },
+      { allowLocalEdits: true, allowWebAccess: false },
+    );
+    expect(merged.allowLocalEdits).toBe(true);
+    expect(merged.allowWebAccess).toBe(false);
+  });
+
+  it("unions allowed fetch domains with override domains first", () => {
+    const merged = mergeUnifiedConfigs(
+      { allowedFetchDomains: ["base.test", "SHARED.test"] },
+      { allowedFetchDomains: ["override.test", "shared.TEST"] },
+    );
+    expect(merged.allowedFetchDomains).toEqual([
+      "override.test",
+      "shared.test",
+      "base.test",
+    ]);
+  });
+
+  it("replaces the complete hook set from the higher-precedence scope", () => {
+    const baseHooks = {
+      PreToolUse: [
+        {
+          matcher: "Read",
+          hooks: [{ type: "command" as const, command: "base" }],
+        },
+      ],
+    };
+    const overrideHooks = {
+      PreToolUse: [
+        {
+          matcher: "Bash",
+          hooks: [{ type: "command" as const, command: "override" }],
+        },
+      ],
+    };
+    const merged = mergeUnifiedConfigs(
+      { hooks: baseHooks },
+      { hooks: overrideHooks },
+    );
+    expect(merged.hooks).toEqual(overrideHooks);
+  });
+
   it("returns base unchanged when override is empty", () => {
     const base = {
       debugLog: true,

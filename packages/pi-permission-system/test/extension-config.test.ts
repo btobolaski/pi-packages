@@ -93,6 +93,9 @@ describe("normalizePermissionSystemConfig", () => {
       debugLog: true,
       permissionReviewLog: false,
       yoloMode: true,
+      allowLocalEdits: false,
+      allowWebAccess: false,
+      allowedFetchDomains: [],
     });
   });
 
@@ -109,6 +112,32 @@ describe("normalizePermissionSystemConfig", () => {
   it("defaults yoloMode to false when missing", () => {
     const result = normalizePermissionSystemConfig({});
     expect(result.yoloMode).toBe(false);
+  });
+
+  it("normalizes local-edit and web-access settings", () => {
+    const result = normalizePermissionSystemConfig({
+      allowLocalEdits: true,
+      allowWebAccess: true,
+      allowedFetchDomains: ["Example.COM", "example.com", " docs.test "],
+    });
+    expect(result.allowLocalEdits).toBe(true);
+    expect(result.allowWebAccess).toBe(true);
+    expect(result.allowedFetchDomains).toEqual(["example.com", "docs.test"]);
+  });
+
+  it("compiles configured PreToolUse matchers", () => {
+    const result = normalizePermissionSystemConfig({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: "Bash|Read",
+            hooks: [{ type: "command", command: "echo check" }],
+          },
+        ],
+      },
+    });
+    expect(result.hooks?.PreToolUse).toHaveLength(1);
+    expect(result.hooks?.PreToolUse?.[0]?.matcherRegex.test("Bash")).toBe(true);
   });
 
   it("includes toolInputPreviewMaxLength when a valid positive integer is provided", () => {

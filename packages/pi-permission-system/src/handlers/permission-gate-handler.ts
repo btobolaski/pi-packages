@@ -73,7 +73,7 @@ export class PermissionGateHandler {
       cwd: ctx.cwd,
     };
 
-    return await this.pipeline.evaluate(tcc, this.runner);
+    return await this.pipeline.evaluate(tcc, this.runner, ctx);
   }
 
   async handleInput(

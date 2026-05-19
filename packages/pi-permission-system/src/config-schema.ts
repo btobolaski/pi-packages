@@ -73,6 +73,51 @@ const permissionMapSchema = z
       "A map of wildcard patterns to permission states.\n\nUse `*` for wildcard matching. When multiple patterns match, the **last matching rule wins** — put broad catch-alls first and specific overrides after them.\n\nPattern keys support home directory expansion:\n- `~/path` or `$HOME/path` — expanded to the OS home directory at match time.\n- `~` or `$HOME` alone — expands to the home directory itself.\n\nThe stored pattern is always shown in logs and approval dialogs as written (e.g. `~/dev/*`).",
   });
 
+const preToolUseHookCommandSchema = z.strictObject({
+  type: z.literal("command"),
+  if: z.string().trim().min(1).optional().meta({
+    description:
+      "Optional Tool(pattern) condition evaluated against the tool input.",
+  }),
+  command: z.string().trim().min(1).meta({
+    description: "Shell command executed for this hook.",
+  }),
+  timeout: z.number().positive().optional().meta({
+    description: "Hook timeout in seconds. Defaults to 10 seconds.",
+  }),
+});
+
+const preToolUseHookMatcherSchema = z.strictObject({
+  matcher: z
+    .string()
+    .trim()
+    .min(1)
+    .refine(
+      (matcher) => {
+        try {
+          new RegExp(matcher);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      { message: "Hook matcher must be a valid regular expression." },
+    )
+    .meta({
+      description:
+        "Regular expression matched against the Claude Code-compatible tool name.",
+    }),
+  hooks: z.array(preToolUseHookCommandSchema).min(1),
+});
+
+const hooksSchema = z
+  .strictObject({
+    PreToolUse: z.array(preToolUseHookMatcherSchema).min(1).optional(),
+  })
+  .meta({
+    description: "Claude Code-compatible tool lifecycle hooks.",
+  });
+
 const permissionSchema = z
   .record(
     z.string().min(1).meta({
@@ -145,6 +190,22 @@ export const unifiedConfigSchema = z
         "Auto-approve `ask`-state permission checks, including subagent approval forwarding.\n\n⚠️ **Use with caution** — this disables all interactive confirmation prompts.",
       default: false,
     }),
+    allowLocalEdits: z.boolean().optional().meta({
+      description:
+        "Auto-approve edit and write tool checks for paths inside the working directory.",
+      default: false,
+    }),
+    allowWebAccess: z.boolean().optional().meta({
+      description:
+        "Auto-approve web search tools and enable per-domain fetch_content prompts.",
+      default: false,
+    }),
+    allowedFetchDomains: z.array(z.string().trim().min(1)).optional().meta({
+      description:
+        "Hostnames persistently approved for fetch_content when allowWebAccess is enabled.",
+      default: [],
+    }),
+    hooks: hooksSchema.optional(),
     toolInputPreviewMaxLength: z.number().int().min(1).optional().meta({
       description:
         "Maximum character length of the inline-JSON tool-input preview shown in permission prompts. Omit to use the default (200). Set to a large value to disable truncation.",

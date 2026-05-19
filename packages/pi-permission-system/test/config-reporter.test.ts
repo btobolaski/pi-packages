@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, test } from "vitest";
 import { buildResolvedConfigLogEntry } from "#src/config-reporter";
+import { DEFAULT_EXTENSION_CONFIG } from "#src/extension-config";
 import { createPermissionSystemLogger } from "#src/logging";
 import type { ResolvedPolicyPaths } from "#src/permission-manager";
 import { PermissionManager } from "#src/permission-manager";
@@ -109,11 +110,7 @@ test("config.resolved entry appears in review log via logger", () => {
     });
 
     const logger = createPermissionSystemLogger({
-      getConfig: () => ({
-        debugLog: false,
-        permissionReviewLog: true,
-        yoloMode: false,
-      }),
+      getConfig: () => ({ ...DEFAULT_EXTENSION_CONFIG }),
       debugLogPath,
       reviewLogPath,
       ensureLogsDirectory: () => undefined,

@@ -191,10 +191,10 @@ function formatConfigIssues(error: ZodError): string[] {
 /**
  * Merge two unified configs.
  * - `permission` is deep-shallow merged (surface-level object maps are shallow-merged).
- * - Scalar fields (debugLog, permissionReviewLog, yoloMode) are replaced when
- *   present in the override.
- * - Array fields (piInfrastructureReadPaths) replace the base when present in
- *   the override (override-wins, same as scalars).
+ * - Scalar fields are replaced when present in the override.
+ * - `allowedFetchDomains` is merged and case-insensitively deduplicated.
+ * - Other array fields replace the base when present in the override.
+ * - Hook matcher arrays use override-wins semantics.
  */
 export function mergeUnifiedConfigs(
   base: UnifiedPermissionConfig,
@@ -203,7 +203,13 @@ export function mergeUnifiedConfigs(
   const merged: UnifiedPermissionConfig = {};
 
   // Boolean scalars: override replaces base when defined
-  for (const key of ["debugLog", "permissionReviewLog", "yoloMode"] as const) {
+  for (const key of [
+    "debugLog",
+    "permissionReviewLog",
+    "yoloMode",
+    "allowLocalEdits",
+    "allowWebAccess",
+  ] as const) {
     const value = override[key] ?? base[key];
     if (value !== undefined) {
       merged[key] = value;
@@ -221,11 +227,25 @@ export function mergeUnifiedConfigs(
     }
   }
 
-  // Array fields: override replaces base when defined
+  const allowedFetchDomains = mergeAllowedFetchDomains(
+    base.allowedFetchDomains,
+    override.allowedFetchDomains,
+  );
+  if (allowedFetchDomains !== undefined) {
+    merged.allowedFetchDomains = allowedFetchDomains;
+  }
+
+  // Other array fields: override replaces base when defined
   const piInfrastructureReadPaths =
     override.piInfrastructureReadPaths ?? base.piInfrastructureReadPaths;
   if (piInfrastructureReadPaths !== undefined) {
     merged.piInfrastructureReadPaths = piInfrastructureReadPaths;
+  }
+
+  // Hooks: the higher-precedence scope replaces the complete hook set.
+  const hooks = override.hooks ?? base.hooks;
+  if (hooks !== undefined) {
+    merged.hooks = hooks;
   }
 
   // Permission: deep-shallow merge
@@ -240,6 +260,20 @@ export function mergeUnifiedConfigs(
   }
 
   return merged;
+}
+
+function mergeAllowedFetchDomains(
+  base: readonly string[] | undefined,
+  override: readonly string[] | undefined,
+): string[] | undefined {
+  if (base === undefined && override === undefined) {
+    return undefined;
+  }
+
+  const domains = [...(override ?? []), ...(base ?? [])]
+    .map((domain) => domain.trim().toLowerCase())
+    .filter((domain) => domain.length > 0);
+  return [...new Set(domains)];
 }
 
 export interface MergedConfigResult {

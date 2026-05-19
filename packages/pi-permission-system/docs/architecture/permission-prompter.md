@@ -75,5 +75,25 @@ const authorizerSelection = new AuthorizerSelection({
 `GateRunner` calls `this.prompter.escalate(details)` for every `ask` — there is no `canConfirm()` pre-check ([#556] dissolved it); the selected `Authorizer` always answers, the `DenyingAuthorizer` by denying with the `confirmationUnavailable` marker.
 The Authorizer spine is entirely behind that seam.
 
+## Per-domain web prompt
+
+`WebAccessPrompter` is a separate local-only sibling used by `ToolCallOverrides` for `fetch_content` domain decisions.
+The caller reaches it only when `allowWebAccess` is enabled, the URL has a parseable hostname, the effective tool check is not already allowed, and `ctx.hasUI` is true.
+It writes the same waiting and outcome review entries as `PermissionPrompter`, emits `permissions:ui_prompt`, and presents one-off, persistent, session, deny, and deny-with-reason choices.
+It does not use the `Authorizer` spine or permission forwarding because the specialized domain choices require a local UI and the no-UI path deliberately falls back to the standard tool policy.
+
+```typescript
+const webAccessPrompter = new WebAccessPrompter(logger, pi.events);
+const toolCallOverrides = new ToolCallOverrides(
+  session,
+  webAccessPrompter,
+  reporter,
+  logger,
+);
+```
+
+A persistent approval delegates to `PermissionSession.persistAllowedFetchDomain`, which uses `ConfigStore`'s global atomic-save path.
+A failed persistent save becomes a session-only approval so the already-approved immediate request can proceed without pretending persistence succeeded.
+
 [#555]: https://github.com/gotgenes/pi-packages/issues/555
 [#556]: https://github.com/gotgenes/pi-packages/issues/556

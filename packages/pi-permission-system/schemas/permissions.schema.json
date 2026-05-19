@@ -25,6 +25,78 @@
       "default": false,
       "type": "boolean"
     },
+    "allowLocalEdits": {
+      "description": "Auto-approve edit and write tool checks for paths inside the working directory.",
+      "default": false,
+      "type": "boolean"
+    },
+    "allowWebAccess": {
+      "description": "Auto-approve web search tools and enable per-domain fetch_content prompts.",
+      "default": false,
+      "type": "boolean"
+    },
+    "allowedFetchDomains": {
+      "description": "Hostnames persistently approved for fetch_content when allowWebAccess is enabled.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "hooks": {
+      "type": "object",
+      "properties": {
+        "PreToolUse": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "matcher": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Regular expression matched against the Claude Code-compatible tool name."
+              },
+              "hooks": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "command"
+                    },
+                    "if": {
+                      "description": "Optional Tool(pattern) condition evaluated against the tool input.",
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "command": {
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "Shell command executed for this hook."
+                    },
+                    "timeout": {
+                      "description": "Hook timeout in seconds. Defaults to 10 seconds.",
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    }
+                  },
+                  "required": ["type", "command"],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": ["matcher", "hooks"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false,
+      "description": "Claude Code-compatible tool lifecycle hooks."
+    },
     "toolInputPreviewMaxLength": {
       "description": "Maximum character length of the inline-JSON tool-input preview shown in permission prompts. Omit to use the default (200). Set to a large value to disable truncation.",
       "markdownDescription": "Maximum character length of the inline-JSON tool-input preview shown in permission prompts.\n\nOmit to use the default (200). Set to a large value (e.g. `10000`) to effectively disable truncation and see the full input.",

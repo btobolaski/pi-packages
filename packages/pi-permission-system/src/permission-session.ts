@@ -5,10 +5,14 @@ import {
   getActiveAgentNameFromSystemPrompt,
 } from "./active-agent";
 import type { AuthorizerSelectionLifecycle } from "./authority/authorizer-selection";
-import type { SessionConfigStore } from "./config-store";
+import type {
+  PermissionConfigSaveContext,
+  SessionConfigStore,
+} from "./config-store";
 import type { PermissionSystemExtensionConfig } from "./extension-config";
 import type { ExtensionPaths } from "./extension-paths";
 import type { ToolCallGateInputs } from "./handlers/gates/tool-call-gate-pipeline";
+import type { HooksConfig } from "./hook-types";
 import type { PathFlavor } from "./path/path-flavor";
 import { PathNormalizer } from "./path-normalizer";
 import type { ScopedPermissionManager } from "./permission-manager";
@@ -40,6 +44,7 @@ export class PermissionSession implements ToolCallGateInputs {
   private skillEntries: SkillPromptEntry[] = [];
   private knownAgentName: string | null = null;
   private pathNormalizer: PathNormalizer;
+  private readonly allowedFetchDomains = new Set<string>();
 
   constructor(
     private readonly paths: ExtensionPaths,
@@ -104,6 +109,7 @@ export class PermissionSession implements ToolCallGateInputs {
   resetForNewSession(ctx: ExtensionContext): void {
     this.permissionManager.configureForCwd(ctx.cwd);
     this.skillEntries = [];
+    this.allowedFetchDomains.clear();
     this.activate(ctx);
   }
 
@@ -114,6 +120,7 @@ export class PermissionSession implements ToolCallGateInputs {
   shutdown(): void {
     this.sessionRules.clear();
     this.skillEntries = [];
+    this.allowedFetchDomains.clear();
     this.deactivate();
   }
 
@@ -124,6 +131,7 @@ export class PermissionSession implements ToolCallGateInputs {
   reload(): void {
     this.permissionManager.configureForCwd(this.context?.cwd);
     this.skillEntries = [];
+    this.allowedFetchDomains.clear();
   }
 
   // ── Skill entries ──────────────────────────────────────────────────────
@@ -180,6 +188,32 @@ export class PermissionSession implements ToolCallGateInputs {
   /** Read current extension config. */
   get config(): PermissionSystemExtensionConfig {
     return this.configStore.current();
+  }
+
+  /** Return the configured Claude Code-compatible hooks. */
+  getHooks(): HooksConfig | undefined {
+    return this.config.hooks;
+  }
+
+  /** Return domains approved for fetch_content during this session. */
+  getAllowedFetchDomains(): ReadonlySet<string> {
+    return this.allowedFetchDomains;
+  }
+
+  /** Approve a fetch_content hostname for the rest of this session. */
+  addAllowedFetchDomain(domain: string): void {
+    const normalized = domain.trim().toLowerCase();
+    if (normalized) {
+      this.allowedFetchDomains.add(normalized);
+    }
+  }
+
+  /** Persist a fetch_content hostname to the global extension config. */
+  persistAllowedFetchDomain(
+    domain: string,
+    ctx: PermissionConfigSaveContext,
+  ): boolean {
+    return this.configStore.persistAllowedFetchDomain?.(domain, ctx) ?? false;
   }
 
   // ── Infrastructure paths ───────────────────────────────────────────────

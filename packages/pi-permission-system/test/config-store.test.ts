@@ -411,6 +411,65 @@ describe("ConfigStore", () => {
         "utf-8",
       );
     });
+
+    it("preserves raw hook configuration while saving runtime settings", () => {
+      const { store } = makeStore();
+      mockLoadUnifiedConfig.mockReturnValue({
+        config: {
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: "Bash",
+                hooks: [{ type: "command", command: "echo check" }],
+              },
+            ],
+          },
+        },
+      });
+      store.save({ ...DEFAULT_EXTENSION_CONFIG }, makeCommandCtx());
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        expect.stringContaining(".tmp"),
+        expect.stringContaining('"command": "echo check"'),
+        "utf-8",
+      );
+    });
+  });
+
+  describe("persistAllowedFetchDomain()", () => {
+    it("normalizes, deduplicates, and saves a hostname", () => {
+      const { store } = makeStore();
+      mockLoadAndMergeConfigs.mockReturnValue({
+        merged: { allowedFetchDomains: ["existing.test"] },
+        issues: [],
+      });
+      store.refresh();
+
+      const persisted = store.persistAllowedFetchDomain(
+        " Example.COM ",
+        makeCommandCtx(),
+      );
+
+      expect(persisted).toBe(true);
+      expect(store.current().allowedFetchDomains).toEqual([
+        "existing.test",
+        "example.com",
+      ]);
+    });
+
+    it("returns false and leaves config unchanged when the save fails", () => {
+      const { store } = makeStore();
+      mockMkdirSync.mockImplementation(() => {
+        throw new Error("disk full");
+      });
+
+      const persisted = store.persistAllowedFetchDomain(
+        "example.com",
+        makeCommandCtx(),
+      );
+
+      expect(persisted).toBe(false);
+      expect(store.current().allowedFetchDomains).toEqual([]);
+    });
   });
 
   // ── logResolvedPaths() ─────────────────────────────────────────────────

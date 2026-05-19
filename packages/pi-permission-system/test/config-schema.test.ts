@@ -27,6 +27,24 @@ describe("unifiedConfigSchema", () => {
         debugLog: true,
         permissionReviewLog: false,
         yoloMode: true,
+        allowLocalEdits: true,
+        allowWebAccess: true,
+        allowedFetchDomains: ["example.com"],
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "Bash|Read",
+              hooks: [
+                {
+                  type: "command",
+                  command: "check-tool",
+                  if: "Bash(git *)",
+                  timeout: 5,
+                },
+              ],
+            },
+          ],
+        },
         toolInputPreviewMaxLength: 1000,
         toolTextSummaryMaxLength: 120,
         piInfrastructureReadPaths: ["/extra/path"],
@@ -67,6 +85,42 @@ describe("unifiedConfigSchema", () => {
       if (!result.success) {
         expect(result.error.issues[0]?.path).toEqual(["debugLog"]);
       }
+    });
+
+    it("rejects invalid web-access and hook fields", () => {
+      expect(
+        unifiedConfigSchema.safeParse({ allowWebAccess: "yes" }).success,
+      ).toBe(false);
+      expect(
+        unifiedConfigSchema.safeParse({ allowedFetchDomains: [""] }).success,
+      ).toBe(false);
+      expect(
+        unifiedConfigSchema.safeParse({
+          hooks: {
+            PreToolUse: [
+              { matcher: "Bash", hooks: [{ type: "command", command: "" }] },
+            ],
+          },
+        }).success,
+      ).toBe(false);
+      expect(
+        unifiedConfigSchema.safeParse({
+          hooks: {
+            PreToolUse: [
+              { matcher: "Bash", hooks: [{ type: "other", command: "x" }] },
+            ],
+          },
+        }).success,
+      ).toBe(false);
+      expect(
+        unifiedConfigSchema.safeParse({
+          hooks: {
+            PreToolUse: [
+              { matcher: "(", hooks: [{ type: "command", command: "x" }] },
+            ],
+          },
+        }).success,
+      ).toBe(false);
     });
 
     it("rejects a non-integer toolInputPreviewMaxLength", () => {

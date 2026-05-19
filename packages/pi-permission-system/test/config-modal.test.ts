@@ -130,6 +130,7 @@ test("permission-system command handlers manage config summary, persistence, and
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-command-"));
   const configPath = join(baseDir, "config.json");
   let config: PermissionSystemExtensionConfig = {
+    ...DEFAULT_EXTENSION_CONFIG,
     debugLog: true,
     permissionReviewLog: false,
     yoloMode: true,

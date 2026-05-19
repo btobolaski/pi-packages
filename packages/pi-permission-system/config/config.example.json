@@ -4,6 +4,24 @@
   "debugLog": false,
   "permissionReviewLog": true,
   "yoloMode": false,
+  "allowLocalEdits": false,
+  "allowWebAccess": false,
+  "allowedFetchDomains": [],
+
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/check-tool-use.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
 
   "toolInputPreviewMaxLength": 400,
   "toolTextSummaryMaxLength": 120,

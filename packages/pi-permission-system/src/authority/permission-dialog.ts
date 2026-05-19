@@ -74,6 +74,14 @@ export function isPermissionDecisionState(
   );
 }
 
+export type WebAccessDomainAction = "allow_persist" | "allow_session";
+
+/** Decision returned by the per-domain fetch_content dialog. */
+export type WebAccessPermissionDecision = PermissionPromptDecision & {
+  domainAction?: WebAccessDomainAction;
+  domain: string;
+};
+
 export interface RequestPermissionOptions {
   /** Override the "for this session" option label (e.g. to show the suggested pattern). */
   sessionLabel?: string;
@@ -86,6 +94,55 @@ export interface RequestPermissionOptions {
     subagentLabel: string;
     servingSessionLabel: string;
   };
+}
+
+export async function requestWebAccessPermissionFromUi(
+  ui: PermissionDecisionUi,
+  title: string,
+  message: string,
+  domain: string,
+): Promise<WebAccessPermissionDecision> {
+  const persistOption = `Yes, always allow ${domain}`;
+  const sessionOption = `Yes, allow ${domain} for this session`;
+  const decisionOptions = [
+    APPROVE_OPTION,
+    persistOption,
+    sessionOption,
+    DENY_OPTION,
+    DENY_WITH_REASON_OPTION,
+  ];
+
+  const selected = await ui.select(`${title}\n${message}`, decisionOptions);
+
+  if (selected === APPROVE_OPTION) {
+    return { approved: true, state: "approved", domain };
+  }
+  if (selected === persistOption) {
+    return {
+      approved: true,
+      state: "approved",
+      domainAction: "allow_persist",
+      domain,
+    };
+  }
+  if (selected === sessionOption) {
+    return {
+      approved: true,
+      state: "approved",
+      domainAction: "allow_session",
+      domain,
+    };
+  }
+  if (selected === DENY_WITH_REASON_OPTION) {
+    const denialReason = normalizePermissionDenialReason(
+      await ui.input(
+        `${title}\nShare why this request was denied (optional).`,
+        "Reason shown back to the agent",
+      ),
+    );
+    return { ...createDeniedPermissionDecision(denialReason), domain };
+  }
+  return { ...createDeniedPermissionDecision(), domain };
 }
 
 export async function requestPermissionDecisionFromUi(

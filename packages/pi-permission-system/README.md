@@ -111,6 +111,42 @@ Within a surface map like `bash` or `mcp`, **last matching rule wins** — put b
 
 For the full reference — all surfaces, runtime knobs, per-agent overrides, merge semantics, and common recipes — see [docs/configuration.md](docs/configuration.md).
 
+### Runtime overrides and PreToolUse hooks
+
+`allowLocalEdits` auto-approves the final `edit` or `write` tool check for paths that resolve inside the working directory.
+The cross-cutting `path` and `external_directory` gates still run first, so this setting cannot bypass a protected path or an outside-CWD boundary.
+
+`allowWebAccess` auto-approves `web_search` and `get_search_content` and adds one-off, persistent, and session-scoped domain choices for `fetch_content`.
+Persistent hostnames are stored in `allowedFetchDomains`.
+
+Claude Code-compatible `PreToolUse` hooks can inspect and decide tool calls after the runtime overrides but before the `fetch_content` domain dialog.
+Hook decisions merge with `deny > ask > allow > defer` priority, and a hook denial can veto either runtime override.
+
+```jsonc
+{
+  "allowLocalEdits": true,
+  "allowWebAccess": true,
+  "allowedFetchDomains": ["docs.example.com"],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/check-tool-use.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Hook commands receive the Claude-compatible JSON payload on stdin.
+Pi cannot apply hook-provided `updatedInput` or `additionalContext`, so those fields are logged and ignored.
+
 ## Upgrading
 
 ### 16.0.0 — the bash gate now fails closed

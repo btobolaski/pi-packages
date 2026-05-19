@@ -30,7 +30,9 @@ Project config overrides global config; per-agent frontmatter overrides both.
 4. Project agent frontmatter
 
 The `permission` object uses deep-shallow merge: string-vs-string replaces; both-object shallow-merges pattern maps; string-vs-object the override wins entirely.
-Scalar fields (`debugLog`, `permissionReviewLog`, `yoloMode`) use simple replacement.
+Scalar fields, including `allowLocalEdits` and `allowWebAccess`, use simple replacement.
+`allowedFetchDomains` arrays are unioned with higher-precedence entries first and case-insensitive deduplication.
+A higher-precedence `hooks` object replaces the complete lower-precedence hook set.
 
 ## Full Example
 
@@ -42,6 +44,23 @@ Scalar fields (`debugLog`, `permissionReviewLog`, `yoloMode`) use simple replace
   "debugLog": false,
   "permissionReviewLog": true,
   "yoloMode": false,
+  "allowLocalEdits": false,
+  "allowWebAccess": false,
+  "allowedFetchDomains": [],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/check-tool-use.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
   "toolInputPreviewMaxLength": 400,
   "toolTextSummaryMaxLength": 120,
   "piInfrastructureReadPaths": [],
@@ -75,17 +94,111 @@ Scalar fields (`debugLog`, `permissionReviewLog`, `yoloMode`) use simple replace
 
 ## Runtime Knobs
 
-| Key                         | Default | Description                                                                                                                                          |
-| --------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `debugLog`                  | `false` | Enables verbose diagnostic logging to `logs/pi-permission-system-debug.jsonl`                                                                        |
-| `permissionReviewLog`       | `true`  | Enables the permission request/denial review log at `logs/pi-permission-system-permission-review.jsonl`                                              |
-| `yoloMode`                  | `false` | Auto-approves `ask` results instead of prompting when yolo mode is enabled                                                                           |
-| `toolInputPreviewMaxLength` | `200`   | Max characters of inline JSON shown in permission prompts for tool inputs. Omit to use the default. Set to a large value to disable truncation.      |
-| `toolTextSummaryMaxLength`  | `80`    | Max characters of inline pattern/path summaries (grep patterns, find globs, ls paths) in permission prompts. Omit to use the default.                |
-| `piInfrastructureReadPaths` | `[]`    | Extra directories to auto-allow for reads, bypassing the `external_directory` gate. Supports `~`/`$HOME` expansion and wildcard patterns (`*`, `?`). |
+| Key                         | Default | Description                                                                                             |
+| --------------------------- | ------- | ------------------------------------------------------------------------------------------------------- |
+| `debugLog`                  | `false` | Enables verbose diagnostic logging to `logs/pi-permission-system-debug.jsonl`                           |
+| `permissionReviewLog`       | `true`  | Enables the permission request/denial review log at `logs/pi-permission-system-permission-review.jsonl` |
+| `yoloMode`                  | `false` | Auto-approves `ask` results instead of prompting when yolo mode is enabled                              |
+| `allowLocalEdits`           | `false` | Auto-approves final `edit` and `write` tool checks for paths inside the working directory               |
+| `allowWebAccess`            | `false` | Auto-approves web search tools and enables per-domain `fetch_content` prompts                           |
+| `allowedFetchDomains`       | `[]`    | Hostnames persistently approved for `fetch_content` when `allowWebAccess` is enabled                    |
+| `hooks`                     | omitted | Claude Code-compatible lifecycle hooks; currently supports `PreToolUse` command hooks                   |
+| `toolInputPreviewMaxLength` | `200`   | Max characters of inline JSON shown in permission prompts for tool inputs                               |
+| `toolTextSummaryMaxLength`  | `80`    | Max characters of inline pattern/path summaries in permission prompts                                   |
+| `piInfrastructureReadPaths` | `[]`    | Extra directories to auto-allow for reads, bypassing the `external_directory` gate                      |
 
 Both logs write to `~/.pi/agent/extensions/pi-permission-system/logs/`.
 No debug output is printed to the terminal.
+
+### Local-edit override
+
+When `allowLocalEdits` is enabled, `edit` and `write` remain visible even if their tool-level policy is `deny`.
+The override changes only the final per-tool check and only when the target path resolves inside the current working directory.
+The `path` and `external_directory` gates run before the override, including symlink-aware canonical boundary checks, so they can still ask or deny the request.
+A `PreToolUse` hook denial also vetoes the override.
+
+```jsonc
+{
+  "allowLocalEdits": true,
+  "permission": {
+    "path": { "*": "allow", "*.env": "deny" },
+    "external_directory": "ask",
+    "write": "deny",
+    "edit": "deny"
+  }
+}
+```
+
+In this example, ordinary in-project edits are allowed, `.env` remains denied, and outside-CWD edits still prompt.
+
+### Web-access override
+
+When `allowWebAccess` is enabled, `web_search` and `get_search_content` are auto-approved at the final per-tool gate.
+`fetch_content` uses the normal policy for invalid URLs or sessions without a UI.
+For a parseable URL in an interactive session, the domain dialog offers one-off approval, persistent approval, session approval, denial, and denial with a reason.
+Persistent approvals are normalized to lowercase hostnames and written to the global config's `allowedFetchDomains` array.
+If persistence fails, the extension reports the save error and falls back to a session approval for the immediate session.
+
+```jsonc
+{
+  "allowWebAccess": true,
+  "allowedFetchDomains": ["docs.example.com"]
+}
+```
+
+### PreToolUse hooks
+
+The `hooks.PreToolUse` format is compatible with Claude Code command hooks.
+Each matcher is a JavaScript regular expression matched against the complete Claude-compatible tool name.
+Built-in Pi names map to `Bash`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `LS`, and `Skill`; MCP calls map to `mcp__<server>__<tool>` when the input supplies those parts.
+
+```jsonc
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git push *)",
+            "command": "./scripts/check-tool-use.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The optional `if` field uses `Tool(pattern)` syntax and wildcard matching against the tool's command or path-shaped input.
+Matching commands run sequentially and receive one JSON object on stdin.
+
+```json
+{
+  "session_id": "session-id",
+  "cwd": "/workspace/project",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": { "command": "git push origin main" },
+  "tool_use_id": "tool-call-id",
+  "transcript_path": "/path/to/session"
+}
+```
+
+| Hook result                              | Meaning                                                         |
+| ---------------------------------------- | --------------------------------------------------------------- |
+| Exit `0` with valid hook JSON            | Apply `permissionDecision` (`allow`, `deny`, `ask`, or `defer`) |
+| Exit `0` with empty or invalid output    | Defer to the existing permission result                         |
+| Exit `2`                                 | Deny, using stderr as the reason when present                   |
+| Other exit code, spawn error, or timeout | Defer to the existing permission result                         |
+
+Multiple hook results merge with `deny > ask > allow > defer` priority.
+Hooks run after the local-edit and web-access overrides but before the `fetch_content` domain dialog.
+A hook `deny` always blocks, a hook `allow` forces the final tool check to allow, and a hook `ask` forces the final tool check to ask unless an explicit runtime override already allowed it.
+The extension logs hook-provided `updatedInput` and `additionalContext`, but Pi's tool-call hook result cannot apply either field, so both are otherwise ignored.
 
 ### `piInfrastructureReadPaths` patterns
 
@@ -776,16 +889,17 @@ permission:
 
 The extension integrates via Pi's lifecycle hooks:
 
-| Hook                 | Behavior                                                                                                                            |
-| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `before_agent_start` | Filters the active tool set (restrict-only), narrows the `Available tools:` system-prompt listing to match, and hides denied skills |
-| `tool_call`          | Enforces permissions for every tool invocation                                                                                      |
-| `input`              | Intercepts `/skill:<name>` requests and enforces skill policy                                                                       |
+| Hook                 | Behavior                                                                                                                                |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `before_agent_start` | Filters the active tool set, retaining denied edit/web tools only when their runtime override is enabled, and narrows the system prompt |
+| `tool_call`          | Enforces cross-cutting gates, runtime overrides, PreToolUse hooks, and final tool policy for every invocation                           |
+| `input`              | Intercepts `/skill:<name>` requests and enforces skill policy                                                                           |
 
 Additional behaviors:
 
 - Unknown/unregistered tools are blocked before permission checks (prevents bypass attempts)
-- Tool filtering is restrict-only: the active set starts from pi's already-active tools (`pi.getActiveTools()`) and only ever has denied tools removed — the permission system never activates a tool pi left off by default (e.g. `find`, `grep`, `ls`)
+- Tool filtering is restrict-only: the active set starts from pi's already-active tools, and the permission system never activates a tool pi left off by default
+- A denied `edit`/`write` or web-access tool remains in that active set only when the matching runtime override is enabled, so invocation-time path gates and hooks can still decide it
 - The `Available tools:` system prompt section is narrowed to match the filtered active tool set: denied tools' lines are dropped, the rest are kept, and the section is removed entirely only when no tool is allowed
 - The narrowed prompt is recomputed and returned on every turn but is byte-stable for a stable policy/agent, so the provider's prompt cache (tools + system prefix) is preserved rather than rewritten each turn
 - Extension-provided tools like `task`, `mcp`, and third-party tools are handled by exact registered name

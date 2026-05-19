@@ -303,6 +303,32 @@ The cross-cutting `path` and `external_directory` gates extract paths for **exte
 The extractor registry (`src/tool-access-extractor-registry.ts`) is created once in `index.ts` and shared: its lookup side is threaded into `ToolCallGatePipeline`, and its registrar side is exposed cross-extension via `PermissionsService.registerToolAccessExtractor`.
 Per-tool path maps for extension tools (a custom extractor key per tool) are a deferred follow-up.
 
+## Runtime overrides and PreToolUse hooks
+
+`ToolCallGatePipeline` preserves the cross-cutting gate order before delegating the final tool check to `ToolCallOverrides`:
+
+1. Skill-read gate.
+2. Cross-cutting `path` gate.
+3. Tool `external_directory` gate.
+4. Bash `external_directory` gate.
+5. Bash `path` gate.
+6. Final per-tool resolution.
+7. `allowLocalEdits` and `allowWebAccess` overrides.
+8. Claude-compatible `PreToolUse` hooks.
+9. The per-domain `fetch_content` dialog when the request still needs a decision.
+10. The ordinary per-tool `GateRunner` path when no earlier stage handled the call.
+
+This ordering prevents a convenience override or hook allow from bypassing path and outside-CWD policy.
+A hook denial can still veto a convenience override, while a hook ask does not undo an explicit override allow.
+
+The hook subsystem is separated into normalization, matching, command execution, and decision merging modules.
+Commands execute sequentially with the Claude-compatible payload on stdin, and their results merge with `deny > ask > allow > defer` priority.
+Exit `2` is a denial; other execution failures and timeouts defer to the existing permission result.
+
+`PermissionSession` owns the session-scoped fetch-domain set and clears it on reset, reload, and shutdown.
+`ConfigStore` persists permanent domain approvals through the same atomic global-config save path used by the settings modal.
+`WebAccessPrompter` owns the local-only domain dialog, its UI-prompt broadcast, and the waiting/outcome review-log bracket.
+
 ## Session approvals: the cache-miss model
 
 Session rules are stored as `Ruleset` and are generalized to all surfaces.
@@ -739,6 +765,13 @@ src/
 ├── decision-reporter.ts      `DecisionReporter` interface + `GateDecisionReporter` class - owns `SessionLogger` and event bus; writes review-log entries and emits decision events (#322)
 ├── decision-audit.ts         `DecisionRecorder` / `DecisionSummaryWriter` / `AuditLogger` interfaces + `DecisionAudit` class - per-session decision counters (`recordDecision` / `recordError`); `writeSummary` emits a `permission.session_summary` debug line on shutdown and warns on a `toolCalls != allowed + blocked + errors` invariant violation (#452)
 ├── session-approval-recorder.ts `SessionApprovalRecorder` interface - records a granted session-scoped approval into the session ruleset; implemented by `SessionRules` (#323, #341)
+├── local-edit.ts               Platform-aware `allowLocalEdits` eligibility using the session `PathNormalizer`
+├── web-access.ts               Web-tool classification, URL hostname extraction, and persisted/session domain checks
+├── hook-types.ts               Claude-compatible PreToolUse config, input, output, and internal decision types
+├── hook-normalize.ts           Raw hook config normalization and matcher compilation
+├── hook-matcher.ts             Pi-to-Claude tool-name mapping plus matcher and optional `Tool(pattern)` selection
+├── hook-executor.ts            Shell-command execution, stdin payload, timeout, and exit-code interpretation
+├── hook-runner.ts              Sequential hook execution and `deny > ask > allow > defer` decision merge
 │
 ├── permission-session.ts     `PermissionSession` class - state/lifecycle owner: owns context lifecycle, session-rule lifecycle (`reset`/`shutdown`/`reload`), skill entries, agent-name resolution, the config gateway, the Tell-Don't-Ask gate inputs, and `notify(message)` (Tell-Don't-Ask UI warn over the owned context, no-op before activation — dissolves the `index.ts` forward-reference cycle, #363); `implements ToolCallGateInputs` (the pipeline's input contract); the resolve role moved to `PermissionResolver` (#340), the recorder role to `SessionRules`, and the three fig-leaf handler role interfaces (`GateHandlerSession` / `AgentPrepSession` / `SessionLifecycleSession`) were retired — handlers depend on the concrete class + `PermissionResolver` (#341)
 ├── path-normalizer.ts        `PathNormalizer` class - the path-interpretation collaborator constructed once at the session edge with the injected `PathFlavor` (exposed as `readonly flavor`) and session `cwd` baked in (#510, #562); hands raw tokens, returns prepared values: `forPath`/`forLiteral` (build `AccessPath`s), `isAbsolute`/`resolveBase`/`joinBase` (flavor-aware `cd`-fold routing the `BashPathResolver` asks), `isWithinDirectory`/`isOutsideWorkingDirectory` (containment), `comparableValue` (lexical comparison value for skill-prompt matching, [#511]), `isInfrastructureRead` (Pi infra-read containment over an `AccessPath`, [#511]), `forBashToken`/`interpretBashCdTarget`/`isBoundaryOutsideWorkingDirectory` (Git Bash/MSYS bash-token interpretation — safe devices preserved, `/c/…` drive mounts translated, other POSIX absolutes literal-only; the shape comes from `flavor.bashTokenShape`, so no `!== "win32"` guard remains, #533, #562); holds no platform discriminator — every platform question delegates to `flavor` (and the flavor-parameterized `path/path-containment` / `path-normalization` / `path/pi-infrastructure-read` / `AccessPath` primitives), so no consumer reads `process.platform` or threads `cwd`; `usesWindowsSeparators` and the `win32`/`posix` `impl` selection were dissolved onto `PathFlavor` (#562); a facade over those primitives — [#505] dissolved `path-utils.ts` into those cohesive modules, and `isOutsideWorkingDirectory` now canonicalizes its operands here before the pure containment check
@@ -762,12 +795,13 @@ src/
 │   ├── lifecycle.ts          SessionLifecycleHandler (session: `PermissionSession` + resolver: `PermissionResolver` (getConfigIssues) + serviceLifecycle: `ServiceLifecycle` + audit: `DecisionSummaryWriter`); writes the decision-audit summary on `session_shutdown` (#341, #320, #452)
 │   ├── before-agent-start.ts AgentPrepHandler (session: `PermissionSession` + resolver: `PermissionResolver` (getToolPermission / skill check) + toolRegistry + warmParser: `() => void`); shouldExposeTool pure helper; recomputes the active set + system-prompt override every fire, no memoization (#341, #437); fire-and-forget `warmParser()` triggers the tree-sitter warm-up so the sync advisory bash path decomposes at gate parity (#309)
 │   ├── permission-gate-handler.ts PermissionGateHandler (session: `PermissionSession` + toolRegistry + pipeline + skillInputPipeline + runner); `handleToolCall` returns the internal total `GateOutcome` (SDK-shape translation moved to the boundary); `GateRunner` and `GateDecisionReporter` are built in `index.ts` and injected (#325, #329, #341, #452); validateRequestedTool + getEventInput + extractSkillNameFromInput pure helpers
+│   ├── tool-call-overrides.ts `ToolCallOverrides` - applies local-edit/web overrides, runs PreToolUse hooks, and resolves the per-domain fetch dialog after cross-cutting gates pass
 │   ├── tool-call-boundary.ts `createFailClosedToolCall(gate, reporter, audit, tracer)` - the only `pi.on("tool_call")` target and sole `GateOutcome` -> SDK-shape translator; owns the `try/catch -> block` (the SDK's `emitToolCall` does not catch a throwing handler), writes a `gate_error` review entry on throw, and emits a `debugLog`-gated `permission.decision` trace per call; `DecisionTracer` interface + defensive `bestEffort*` event readers (#452)
 │   └── gates/               Pure descriptor factories + runner
 │       ├── types.ts          GateOutcome, ToolCallContext
 │       ├── descriptor.ts     GateDescriptor (with DenialContext), GateBypass, GateResult types
 │       ├── runner.ts         GateRunner class — constructed with three distinct collaborators: `ScopedPermissionResolver` (resolver), `SessionApprovalRecorder` (`SessionRules` recorder), `AskEscalator` (`AuthorizerSelection`, #555, #556; the single-method ask-escalation seam that replaced `GatePrompter`), plus `DecisionReporter`; `run(gate, agentName, toolCallId)` dispatches null / bypass / descriptor (#341)
-│       ├── tool-call-gate-pipeline.ts `ToolCallGateInputs` interface (query methods: `getActiveSkillEntries`, `getInfrastructureReadDirs`, `getToolPreviewLimits`, `getPathNormalizer`, `getPromotablePathTokenMatcher`) + `ToolCallGatePipeline` class — constructed with `ScopedPermissionResolver` + `ToolCallGateInputs`; owns bash-command extraction + single `BashProgram.parse` (fed the session `PathNormalizer` and the agent-scoped `getPromotablePathTokenMatcher()` predicate, #510, #509), `ToolPreviewFormatter` construction, infra-dir list, the six gate producers, and the run loop; `evaluate(tcc, runner)` returns the first block outcome or allow (#327, #340)
+│       ├── tool-call-gate-pipeline.ts `ToolCallGateInputs` interface (query methods: `getActiveSkillEntries`, `getInfrastructureReadDirs`, `getToolPreviewLimits`, `getPathNormalizer`, `getPromotablePathTokenMatcher`) + `ToolCallGatePipeline` class — constructed with `ScopedPermissionResolver` + `ToolCallGateInputs`; owns bash-command extraction + single `BashProgram.parse` (fed the session `PathNormalizer` and the agent-scoped `getPromotablePathTokenMatcher()` predicate, #510, #509), `ToolPreviewFormatter` construction, infra-dir list, the five cross-cutting gate producers, and final per-tool resolution; invokes `ToolCheckOverrides` only after every cross-cutting gate passes, then routes the effective check through `GateRunner`
 │       ├── skill-input-gate-pipeline.ts `SkillInputGateInputs` + `GateNotifier` interfaces + `SkillInputGatePipeline` class — constructed once in the composition root and injected into `PermissionGateHandler`; owns raw `checkPermission` pre-check, deny notify, `describeSkillInputGate` descriptor, request-id mint (`createSkillInputRequestId`), and `runner.run`; `evaluate(skillName, agentName, notifier, runner)` makes the `input` path symmetric with the `tool_call` path (#329, absorbs #330)
 │       ├── helpers.ts        deriveDecisionValue, deriveResolution, buildDecisionEvent
 │       ├── skill-read.ts     describeSkillReadGate - pure descriptor factory
@@ -791,7 +825,7 @@ src/
 ├── service.ts                PermissionsService interface, Symbol.for() accessor (cross-extension API)
 ├── permission-events.ts      Event channel constants, payload types, emit helpers
 ├── permission-ui-prompt.ts   Centralized construction for `permissions:ui_prompt` event payloads - `buildUiPrompt` is the single builder for direct and forwarded asks (surface/value override-or-derive, forwarding passthrough), keeping the emitted contract shape in one place (#557)
-├── config-store.ts           `ConfigStore` class — owns `config` + `lastConfigWarning`; `ConfigReader`, `SessionConfigStore`, `CommandConfigStore` narrow interfaces (#335, #337)
+├── config-store.ts           `ConfigStore` class — owns `config` + `lastConfigWarning`; `ConfigReader`, `SessionConfigStore`, `CommandConfigStore` narrow interfaces; persists runtime knobs and permanent fetch-domain approvals through one atomic global-config save path (#335, #337)
 ├── config-loader.ts          File I/O, format detection, strict zod validation (fail-closed) for config files
 ├── config-schema.ts          Zod schemas - single source of truth for the config shape; derives the JSON Schema (buildPermissionsJsonSchema) and the config types (#547)
 ├── config-paths.ts           Path derivation
@@ -826,10 +860,11 @@ src/
 ├── authority/                 Subagent detection, the Authorizer spine, and forwarded-permission escalation (seeded #529; forwarding subsystem relocated here #530; Authorizer spine landed #555; migration completed #559)
 │   ├── authorizer.ts          `Authorizer` interface (`authorize(details): Promise<PermissionPromptDecision>`) + `AuthorizerSelectionDeps` + `selectAuthorizer(ctx, deps)` - the once-per-activation hasUI/isSubagent/deny dispatch, replacing its re-derivation across the former `PromptingGateway`/`PermissionPrompter`/`ApprovalEscalator` (#555)
 │   ├── local-user-authorizer.ts `LocalUserAuthorizer` class - Authorizer for a session with UI and the single `permissions:ui_prompt` emit site: renders a forwarded ask's provenance (`details.forwarding`) as a non-degraded broadcast + `(Subagent)` title, then shows the dialog (#555, #557)
-│   ├── permission-dialog.ts   Dialog options (once / session / deny); relocated from `src/permission-dialog.ts` (#559)
+│   ├── permission-dialog.ts   Standard dialog options plus local per-domain fetch_content choices (once / persistent / session / deny); relocated from `src/permission-dialog.ts` (#559)
 │   ├── denying-authorizer.ts  `DenyingAuthorizer` class - least-privilege Authorizer for a session with no reachable authority; denies with the `confirmationUnavailable` marker so the ask path derives the `confirmation_unavailable` resolution (#555, #556)
 │   ├── authorizer-selection.ts `AuthorizerSelection` class - context-owning `AskEscalator` implementation (`escalate(details)`); selects the `Authorizer` once per activation and delegates to it via `PermissionPrompter`; rewrite of `PromptingGateway`; `canConfirm()` dissolved (#555, #556)
 │   ├── permission-prompter.ts `PermissionPrompter` class (`PermissionPrompterApi`) - review-log bracketing (waiting → approved/denied) around `authorizer.authorize(details)`; `PromptPermissionDetails` type; relocated from `src/permission-prompter.ts`, drops per-call `ctx` threading (#555)
+│   ├── web-access-prompter.ts `WebAccessPrompter` class - local-only fetch-domain dialog with UI-prompt broadcast and review-log bracketing; deliberately bypasses forwarded authority because callers require `ctx.hasUI`
 │   ├── subagent-detection.ts  SubagentDetection class - single owner of subagent detection (SubagentDetector.isSubagent + RegisteredChildDetector.isRegisteredChild); delegates to subagent-context (#529)
 │   ├── subagent-context.ts    Pure subagent execution context detection (registry + env vars + filesystem)
 │   ├── subagent-registry.ts   SubagentSessionRegistry class + getSubagentSessionRegistry() process-global accessor - in-process subagent session tracking; relocated from `src/subagent-registry.ts` (#559)

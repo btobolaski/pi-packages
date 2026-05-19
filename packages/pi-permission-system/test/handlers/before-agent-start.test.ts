@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { DEFAULT_EXTENSION_CONFIG } from "#src/extension-config";
 import {
   AgentPrepHandler,
   shouldExposeTool,
@@ -87,6 +88,25 @@ describe("shouldExposeTool", () => {
   it("returns false when tool permission is deny", () => {
     const getter = vi.fn().mockReturnValue("deny");
     expect(shouldExposeTool("write", null, getter)).toBe(false);
+  });
+
+  it("exposes denied edit and write tools when local edits are enabled", () => {
+    const getter = vi.fn().mockReturnValue("deny");
+    const config = { ...DEFAULT_EXTENSION_CONFIG, allowLocalEdits: true };
+    expect(shouldExposeTool("edit", null, getter, config)).toBe(true);
+    expect(shouldExposeTool("write", null, getter, config)).toBe(true);
+    expect(shouldExposeTool("read", null, getter, config)).toBe(false);
+  });
+
+  it("exposes denied web tools when web access is enabled", () => {
+    const getter = vi.fn().mockReturnValue("deny");
+    const config = { ...DEFAULT_EXTENSION_CONFIG, allowWebAccess: true };
+    expect(shouldExposeTool("web_search", null, getter, config)).toBe(true);
+    expect(shouldExposeTool("get_search_content", null, getter, config)).toBe(
+      true,
+    );
+    expect(shouldExposeTool("fetch_content", null, getter, config)).toBe(true);
+    expect(shouldExposeTool("bash", null, getter, config)).toBe(false);
   });
 
   it("passes agentName through to getToolPermission", () => {

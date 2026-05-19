@@ -1,6 +1,8 @@
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AccessPath } from "#src/access-intent/access-path";
 import { BashProgram } from "#src/access-intent/bash/program";
 import { classifyToolKind } from "#src/access-intent/tool-kind";
+import type { ToolCheckOverrides } from "#src/handlers/tool-call-overrides";
 import type { PathNormalizer } from "#src/path-normalizer";
 import type { ScopedPermissionResolver } from "#src/permission-resolver";
 import type { SkillPromptEntry } from "#src/skill-prompt-sanitizer";
@@ -67,11 +69,13 @@ export class ToolCallGatePipeline {
     private readonly inputs: ToolCallGateInputs,
     private readonly customFormatters?: ToolInputFormatterLookup,
     private readonly customExtractors?: ToolAccessExtractorLookup,
+    private readonly overrides?: ToolCheckOverrides,
   ) {}
 
   async evaluate(
     tcc: ToolCallContext,
     runner: GateRunner,
+    ctx?: ExtensionContext,
   ): Promise<GateOutcome> {
     // Parse the bash command exactly once per evaluate; the three bash gates
     // share this single BashProgram instead of each re-parsing (#308).
@@ -112,22 +116,6 @@ export class ToolCallGatePipeline {
         ),
       () => describeBashExternalDirectoryGate(tcc, bashProgram, this.resolver),
       () => describeBashPathGate(tcc, bashProgram, this.resolver),
-      () => {
-        const { toolCheck, accessPath } = this.resolvePerToolCheck(
-          tcc,
-          bashProgram,
-          command,
-          normalizer,
-        );
-        const toolDescriptor = describeToolGate(
-          tcc,
-          toolCheck,
-          formatter,
-          accessPath,
-        );
-        toolDescriptor.preCheck = toolCheck;
-        return toolDescriptor;
-      },
     ];
 
     for (const produce of gateProducers) {
@@ -141,7 +129,28 @@ export class ToolCallGatePipeline {
       }
     }
 
-    return { action: "allow" };
+    const { toolCheck, accessPath } = this.resolvePerToolCheck(
+      tcc,
+      bashProgram,
+      command,
+      normalizer,
+    );
+    const overrideOutcome =
+      this.overrides && ctx
+        ? await this.overrides.apply(tcc, ctx, toolCheck, formatter)
+        : { action: "continue" as const, check: toolCheck };
+    if (overrideOutcome.action !== "continue") {
+      return overrideOutcome;
+    }
+
+    const toolDescriptor = describeToolGate(
+      tcc,
+      overrideOutcome.check,
+      formatter,
+      accessPath,
+    );
+    toolDescriptor.preCheck = overrideOutcome.check;
+    return await runner.run(toolDescriptor, tcc.agentName, tcc.toolCallId);
   }
 
   /**

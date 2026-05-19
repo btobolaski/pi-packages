@@ -10,7 +10,7 @@ import {
   makeResolver,
   makeTcc,
 } from "#test/helpers/gate-fixtures";
-import { makeCheckResult } from "#test/helpers/handler-fixtures";
+import { makeCheckResult, makeCtx } from "#test/helpers/handler-fixtures";
 
 // ── BashProgram.parse mock ─────────────────────────────────────────────────
 
@@ -98,8 +98,35 @@ describe("ToolCallGatePipeline", () => {
       );
 
       expect(result).toEqual({ action: "block", reason: "first gate blocked" });
-      // Pipeline looped to the first gate, got block, and stopped — not all 6 gates.
+      // Pipeline looped to the first gate, got block, and stopped.
       expect(runSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not run tool overrides until every cross-cutting gate passes", async () => {
+      const resolver = makeResolver(makeCheckResult());
+      const inputs = makeGateInputs();
+      const { runner } = makeGateRunner();
+      vi.spyOn(runner, "run").mockResolvedValue({
+        action: "block",
+        reason: "path gate blocked",
+      });
+      const overrides = { apply: vi.fn() };
+      const pipeline = new ToolCallGatePipeline(
+        resolver,
+        inputs,
+        undefined,
+        undefined,
+        overrides,
+      );
+
+      const result = await pipeline.evaluate(
+        makeTcc({ toolName: "edit", input: { path: "src/a.ts" } }),
+        runner,
+        makeCtx(),
+      );
+
+      expect(result).toEqual({ action: "block", reason: "path gate blocked" });
+      expect(overrides.apply).not.toHaveBeenCalled();
     });
 
     it("calls getToolPreviewLimits() during evaluate", async () => {

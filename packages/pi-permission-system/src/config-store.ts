@@ -43,7 +43,13 @@ export interface ConfigReader {
 export interface SessionConfigStore extends ConfigReader {
   refresh(ctx?: ExtensionContext): void;
   logResolvedPaths(cwd?: string): void;
+  persistAllowedFetchDomain?(
+    domain: string,
+    ctx: PermissionConfigSaveContext,
+  ): boolean;
 }
+
+export type PermissionConfigSaveContext = Pick<ExtensionCommandContext, "ui">;
 
 /**
  * Narrow subset of `ConfigStore` for the `/permission-system` command.
@@ -54,7 +60,7 @@ export interface SessionConfigStore extends ConfigReader {
 export interface CommandConfigStore extends ConfigReader {
   save(
     next: PermissionSystemExtensionConfig,
-    ctx: ExtensionCommandContext,
+    ctx: PermissionConfigSaveContext,
   ): void;
 }
 
@@ -127,6 +133,9 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       debugLog: runtimeConfig.debugLog,
       permissionReviewLog: runtimeConfig.permissionReviewLog,
       yoloMode: runtimeConfig.yoloMode,
+      allowLocalEdits: runtimeConfig.allowLocalEdits,
+      allowWebAccess: runtimeConfig.allowWebAccess,
+      allowedFetchDomains: runtimeConfig.allowedFetchDomains,
     });
   }
 
@@ -140,8 +149,15 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
   // fallow-ignore-next-line unused-class-member
   save(
     next: PermissionSystemExtensionConfig,
-    ctx: ExtensionCommandContext,
+    ctx: PermissionConfigSaveContext,
   ): void {
+    this.saveConfig(next, ctx);
+  }
+
+  private saveConfig(
+    next: PermissionSystemExtensionConfig,
+    ctx: PermissionConfigSaveContext,
+  ): boolean {
     const normalized = normalizePermissionSystemConfig(next);
     const globalPath = getGlobalConfigPath(this.deps.agentDir);
 
@@ -151,6 +167,9 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       debugLog: normalized.debugLog,
       permissionReviewLog: normalized.permissionReviewLog,
       yoloMode: normalized.yoloMode,
+      allowLocalEdits: normalized.allowLocalEdits,
+      allowWebAccess: normalized.allowWebAccess,
+      allowedFetchDomains: normalized.allowedFetchDomains,
     };
 
     const tmpPath = `${globalPath}.tmp`;
@@ -171,7 +190,7 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
         `Failed to save permission-system config at '${globalPath}': ${message}`,
         "error",
       );
-      return;
+      return false;
     }
 
     this.config = normalized;
@@ -182,7 +201,27 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       debugLog: normalized.debugLog,
       permissionReviewLog: normalized.permissionReviewLog,
       yoloMode: normalized.yoloMode,
+      allowLocalEdits: normalized.allowLocalEdits,
+      allowWebAccess: normalized.allowWebAccess,
+      allowedFetchDomains: normalized.allowedFetchDomains,
     });
+    return true;
+  }
+
+  /** Persist one normalized fetch_content hostname to the global config. */
+  persistAllowedFetchDomain(
+    domain: string,
+    ctx: PermissionConfigSaveContext,
+  ): boolean {
+    const normalizedDomain = domain.trim().toLowerCase();
+    if (!normalizedDomain) {
+      return false;
+    }
+
+    const allowedFetchDomains = [
+      ...new Set([...this.config.allowedFetchDomains, normalizedDomain]),
+    ];
+    return this.saveConfig({ ...this.config, allowedFetchDomains }, ctx);
   }
 
   /**

@@ -12,6 +12,7 @@ import { PermissionPrompter } from "./authority/permission-prompter";
 import { SubagentDetection } from "./authority/subagent-detection";
 import { subscribeSubagentLifecycle } from "./authority/subagent-lifecycle-events";
 import { getSubagentSessionRegistry } from "./authority/subagent-registry";
+import { WebAccessPrompter } from "./authority/web-access-prompter";
 import { registerBuiltinToolInputFormatters } from "./builtin-tool-input-formatters";
 import { registerPermissionSystemCommand } from "./config-modal";
 import { getGlobalConfigPath } from "./config-paths";
@@ -29,6 +30,7 @@ import { GateRunner } from "./handlers/gates/runner";
 import { SkillInputGatePipeline } from "./handlers/gates/skill-input-gate-pipeline";
 import { ToolCallGatePipeline } from "./handlers/gates/tool-call-gate-pipeline";
 import { createFailClosedToolCall } from "./handlers/tool-call-boundary";
+import { ToolCallOverrides } from "./handlers/tool-call-overrides";
 import { buildAccessIntentForSurface } from "./input-normalizer";
 import { pathFlavorForPlatform } from "./path/path-flavor";
 import { PermissionManager } from "./permission-manager";
@@ -218,6 +220,27 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   );
 
   const reporter = new GateDecisionReporter(logger, pi.events);
+  const webAccessPrompter = new WebAccessPrompter(logger, pi.events);
+  const toolOverrideSession = {
+    get config() {
+      return session.config;
+    },
+    getPathNormalizer: () => session.getPathNormalizer(),
+    getHooks: () => session.getHooks(),
+    getAllowedFetchDomains: () => session.getAllowedFetchDomains(),
+    addAllowedFetchDomain: (domain: string) =>
+      session.addAllowedFetchDomain(domain),
+    persistAllowedFetchDomain: (
+      domain: string,
+      ctx: Parameters<PermissionSession["persistAllowedFetchDomain"]>[1],
+    ) => session.persistAllowedFetchDomain(domain, ctx),
+  };
+  const toolCallOverrides = new ToolCallOverrides(
+    toolOverrideSession,
+    webAccessPrompter,
+    reporter,
+    logger,
+  );
   const gateRunner = new GateRunner(
     resolver,
     sessionRules,
@@ -229,6 +252,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     session,
     formatterRegistry,
     accessExtractorRegistry,
+    toolCallOverrides,
   );
   const skillInputGatePipeline = new SkillInputGatePipeline(resolver);
   const gates = new PermissionGateHandler(

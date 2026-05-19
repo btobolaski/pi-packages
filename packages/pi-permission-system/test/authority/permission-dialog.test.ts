@@ -5,6 +5,7 @@ import {
   normalizePermissionDenialReason,
   type PermissionDecisionUi,
   requestPermissionDecisionFromUi,
+  requestWebAccessPermissionFromUi,
 } from "#src/authority/permission-dialog";
 
 describe("isPermissionDecisionState", () => {
@@ -263,6 +264,66 @@ describe("requestPermissionDecisionFromUi", () => {
       );
       expect(selectFn).toHaveBeenCalledTimes(1);
       expect(result).toEqual({ approved: true, state: "approved" });
+    });
+  });
+});
+
+describe("requestWebAccessPermissionFromUi", () => {
+  it("offers one-off, persistent, session, and denial choices", async () => {
+    const select = vi.fn().mockResolvedValue("Yes");
+    const ui: PermissionDecisionUi = { select, input: vi.fn() };
+    await requestWebAccessPermissionFromUi(
+      ui,
+      "Title",
+      "Message",
+      "example.com",
+    );
+    expect(select).toHaveBeenCalledWith("Title\nMessage", [
+      "Yes",
+      "Yes, always allow example.com",
+      "Yes, allow example.com for this session",
+      "No",
+      "No, provide reason",
+    ]);
+  });
+
+  it("returns the persistent domain action", async () => {
+    const ui: PermissionDecisionUi = {
+      select: vi.fn().mockResolvedValue("Yes, always allow example.com"),
+      input: vi.fn(),
+    };
+    const result = await requestWebAccessPermissionFromUi(
+      ui,
+      "Title",
+      "Message",
+      "example.com",
+    );
+    expect(result).toEqual({
+      approved: true,
+      state: "approved",
+      domainAction: "allow_persist",
+      domain: "example.com",
+    });
+  });
+
+  it("returns the session domain action", async () => {
+    const ui: PermissionDecisionUi = {
+      select: vi
+        .fn()
+        .mockResolvedValue("Yes, allow example.com for this session"),
+      input: vi.fn(),
+    };
+    const result = await requestWebAccessPermissionFromUi(
+      ui,
+      "Title",
+      "Message",
+      "example.com",
+    );
+    expect(result).toEqual({
+      approved: true,
+      state: "approved",
+      domainAction: "allow_session",
+      domain: "example.com",
     });
   });
 });

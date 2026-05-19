@@ -7,11 +7,15 @@ import {
   createActiveToolsCacheKey,
   createBeforeAgentStartPromptStateKey,
 } from "#src/before-agent-start-cache";
+import type { PermissionSystemExtensionConfig } from "#src/extension-config";
 import type { PermissionSession } from "#src/permission-session";
 import { resolveSkillPromptEntries } from "#src/skill-prompt-sanitizer";
 import { sanitizeAvailableToolsSection } from "#src/system-prompt-sanitizer";
 import { getToolNameFromValue, type ToolRegistry } from "#src/tool-registry";
 import type { PermissionState } from "#src/types";
+import { WEB_ACCESS_TOOLS } from "#src/web-access";
+
+const LOCAL_EDIT_TOOLS: ReadonlySet<string> = new Set(["edit", "write"]);
 
 /** Minimal subset of BeforeAgentStartEvent used by this handler. */
 interface BeforeAgentStartPayload {
@@ -27,9 +31,19 @@ export function shouldExposeTool(
   toolName: string,
   agentName: string | null,
   getToolPermission: (toolName: string, agentName?: string) => PermissionState,
+  config?: PermissionSystemExtensionConfig,
 ): boolean {
   const toolPermission = getToolPermission(toolName, agentName ?? undefined);
-  return toolPermission !== "deny";
+  if (toolPermission !== "deny") {
+    return true;
+  }
+  if (config?.allowLocalEdits && LOCAL_EDIT_TOOLS.has(toolName)) {
+    return true;
+  }
+  if (config?.allowWebAccess && WEB_ACCESS_TOOLS.has(toolName)) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -63,8 +77,11 @@ export class AgentPrepHandler {
         continue;
       }
       if (
-        shouldExposeTool(toolName, agentName, (t, a) =>
-          this.session.getToolPermission(t, a),
+        shouldExposeTool(
+          toolName,
+          agentName,
+          (t, a) => this.session.getToolPermission(t, a),
+          this.session.config,
         )
       ) {
         allowedTools.push(toolName);

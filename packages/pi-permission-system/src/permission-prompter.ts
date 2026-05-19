@@ -8,6 +8,7 @@ import {
 import type {
   PermissionPromptDecision,
   RequestPermissionOptions,
+  WebAccessPermissionDecision,
 } from "./permission-dialog";
 import type { SubagentSessionRegistry } from "./subagent-registry";
 import { shouldAutoApprovePermissionState } from "./yolo-mode";
@@ -37,6 +38,11 @@ export interface PermissionPrompterApi {
     ctx: ExtensionContext,
     details: PromptPermissionDetails,
   ): Promise<PermissionPromptDecision>;
+  promptWebAccess(
+    ctx: ExtensionContext,
+    details: PromptPermissionDetails,
+    domain: string,
+  ): Promise<WebAccessPermissionDecision>;
 }
 
 /**
@@ -64,6 +70,16 @@ export interface PermissionPrompterDeps {
     message: string,
     options?: RequestPermissionOptions,
   ): Promise<PermissionPromptDecision>;
+  /**
+   * Show the per-domain `fetch_content` dialog in the UI.
+   * Returns a decision augmented with an optional `domainAction`.
+   */
+  requestWebAccessPermissionFromUi(
+    ui: ExtensionContext["ui"],
+    title: string,
+    message: string,
+    domain: string,
+  ): Promise<WebAccessPermissionDecision>;
 }
 
 /**
@@ -96,6 +112,52 @@ export class PermissionPrompter implements PermissionPrompterApi {
       details.message,
       this.buildForwardingDeps(),
       details.sessionLabel ? { sessionLabel: details.sessionLabel } : undefined,
+    );
+
+    this.writeReviewEntry(
+      decision.approved
+        ? "permission_request.approved"
+        : "permission_request.denied",
+      {
+        ...details,
+        resolution: decision.state,
+        denialReason: decision.denialReason,
+      },
+    );
+
+    return decision;
+  }
+
+  /**
+   * Web-access variant of `prompt` for the per-domain `fetch_content` dialog.
+   *
+   * Runs the same yolo-auto-approve / waiting / approved-or-denied review-log
+   * cycle as `prompt`, but invokes `requestWebAccessPermissionFromUi`
+   * directly against the UI — forwarded-permission polling is intentionally
+   * skipped because callers only reach this path when `ctx.hasUI` is true.
+   */
+  async promptWebAccess(
+    ctx: ExtensionContext,
+    details: PromptPermissionDetails,
+    domain: string,
+  ): Promise<WebAccessPermissionDecision> {
+    if (shouldAutoApprovePermissionState("ask", this.deps.getConfig())) {
+      this.writeReviewEntry("permission_request.auto_approved", details);
+      return {
+        approved: true,
+        state: "approved",
+        autoApproved: true,
+        domain,
+      };
+    }
+
+    this.writeReviewEntry("permission_request.waiting", details);
+
+    const decision = await this.deps.requestWebAccessPermissionFromUi(
+      ctx.ui,
+      "Permission request",
+      details.message,
+      domain,
     );
 
     this.writeReviewEntry(

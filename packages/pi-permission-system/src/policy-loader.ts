@@ -213,6 +213,7 @@ export class FilePolicyLoader implements PolicyLoader {
 
     const value: ScopeConfig = {
       permission: config.permission,
+      hooks: config.hooks,
     };
 
     this.globalConfigCache = { stamp, value };

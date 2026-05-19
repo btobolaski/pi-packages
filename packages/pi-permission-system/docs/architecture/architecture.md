@@ -359,15 +359,42 @@ sequenceDiagram
 ### Phase 1: Tool filtering (`before_agent_start`)
 
 ```typescript
-function shouldExposeTool(toolName: string, rules: Ruleset): boolean {
-  const rule = evaluate(toolName, "*", rules);
-  return rule.action !== "deny";
+function shouldExposeTool(
+  toolName: string,
+  agentName: string | null,
+  getToolPermission: (toolName: string, agentName?: string) => PermissionState,
+  config?: PermissionSystemExtensionConfig,
+): boolean {
+  if (getToolPermission(toolName, agentName ?? undefined) !== "deny") {
+    return true;
+  }
+  // Expose tools that the per-call config overrides would auto-allow.
+  if (config?.allowLocalEdits && LOCAL_EDIT_TOOLS.has(toolName)) return true;
+  if (config?.allowWebAccess && WEB_ACCESS_TOOLS.has(toolName)) return true;
+  return false;
 }
 ```
 
-Uses `evaluate()` with pattern `"*"` - "is this tool denied at the surface level, regardless of specific input?"
+The first check uses `evaluate()` via `getToolPermission()` with pattern `"*"` — "is this tool denied at the surface level, regardless of specific input?"
+Tools that are denied at the surface level are still exposed when a runtime override (`allowLocalEdits` for `edit`/`write`, `allowWebAccess` for `web_search`/`get_search_content`/`fetch_content`) will auto-allow them per call, so the agent sees a consistent toolset.
 
 ### Phase 2: Invocation gating (`tool_call`)
+
+`PermissionGateHandler.handleToolCall` runs a fixed sequence of descriptor-based gates, each with its own pre-check, session fast-path, prompt and emit steps:
+
+1. `path` gate — cross-cutting file path rules for all path-bearing tools (read/write/edit/find/grep/ls and bash extracts).
+2. `external_directory` gate — path-bearing tool target is outside the working tree.
+3. `bash external_directory` gate — bash command references a path outside the working tree.
+4. `bash path` gate — bash command extracts to a path covered by a `path` rule.
+5. Tool permission check — `checkPermission(toolName, input, agentName, sessionRules)` against the composed ruleset.
+6. `applyConfigOverrides` — if the tool gate didn't return `allow`, force allow when `allowLocalEdits` applies to `edit`/`write` inside `cwd`, or when `allowWebAccess` covers a search tool, or when the persisted `allowedFetchDomains` / session-allowed domain list covers a `fetch_content` URL.
+7. `applyPreToolUseHooks` — run any matching global PreToolUse hooks.
+   `deny` blocks the call with the joined hook reasons; `allow` forces allow; `ask` upgrades the effective state to `ask` unless a config override already forced allow.
+8. `runFetchContentDialogIfNeeded` — only when the call is still non-allow `fetch_content` with `allowWebAccess` and a UI; opens the per-domain `Yes / Yes, always allow <domain> / Yes, allow <domain> for this session / No / No, provide reason` dialog.
+   Persisted choices update `allowedFetchDomains` via `saveExtensionConfig`; session choices update the in-memory allow set on `PermissionSession`.
+9. Final tool gate — a standard `runGateCheck` against the (possibly mutated) effective check: allow proceeds; deny blocks; ask elicits from the oracle via `runGateCheck`'s prompt branch.
+
+For the simple path the steps reduce to:
 
 ```typescript
 // Surface-specific input normalization (what to query)
@@ -387,9 +414,9 @@ return decision.action === "allow" ? proceed : block;
 ```
 
 Same `evaluate()`, same ruleset.
-The only surface-specific logic is input normalization (what `surface` and `value` to look up) and pattern suggestion (what glob to offer for "session" approval).
+The surface-specific logic is input normalization (what `surface` and `value` to look up), pattern suggestion (what glob to offer for "session" approval), and the descriptor-based gates above that order the cross-cutting checks.
 
-`checkPermission()` uses a single evaluate path: `normalizeInput()` → `evaluateFirst()` → `deriveSource()` → single result object.
+`checkPermission()` itself uses a single evaluate path: `normalizeInput()` → `evaluateFirst()` → `deriveSource()` → single result object.
 
 ## Subagent detection and permission forwarding
 
@@ -526,6 +553,14 @@ src/
 ├── config-reporter.ts        Structured log entries for resolved config
 ├── config-modal.ts           /permission-system slash command UI
 ├── extension-config.ts       Runtime knobs (debugLog, yoloMode, etc.)
+│
+├── local-edit.ts              `allowLocalEdits` predicate: path normalization + within-cwd check for edit/write
+├── web-access.ts              `allowWebAccess` predicates: web-search auto-allow, fetch_content domain checks
+├── hook-types.ts              PreToolUse hook type definitions (matchers, commands, decisions, runtime context)
+├── hook-normalize.ts          Raw JSON → typed HooksConfig normalization (compiles matcherRegex)
+├── hook-matcher.ts            Pi → Claude Code tool-name mapping + matcher + `if(…)` clause filtering
+├── hook-executor.ts           Single-hook subprocess execution + stdout/stderr/exit-code parsing
+├── hook-runner.ts             Multi-hook orchestrator + decision merge (deny > ask > allow > defer)
 │
 ├── permission-merge.ts        Deep-shallow merge for flat permission configs
 ├── path-utils.ts              Path normalization, within-directory, outside-CWD, safe-system-path, path-bearing-tool, Pi infrastructure read

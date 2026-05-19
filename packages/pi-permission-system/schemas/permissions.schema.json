@@ -41,6 +41,42 @@
       "type": "integer",
       "minimum": 1
     },
+    "allowLocalEdits": {
+      "description": "Auto-approve the tool-level permission check for edit and write when the target path is inside the current working directory. Path and external_directory gates and PreToolUse hooks still apply.",
+      "markdownDescription": "Auto-approve the tool-level permission check for `edit` and `write` when the target path resolves inside the current working directory.\n\nThe override applies only to the final tool permission gate. Cross-cutting `path` and `external_directory` gates run earlier and can still block in-CWD edits, and PreToolUse hooks run after the override and can still `deny` or `ask`.",
+      "type": "boolean",
+      "default": false
+    },
+    "allowWebAccess": {
+      "description": "Auto-approve web_search and get_search_content tool calls, and enable interactive per-domain prompts for fetch_content.",
+      "markdownDescription": "Auto-approve `web_search` and `get_search_content` tool calls, and enable the per-domain confirmation dialog for `fetch_content`.\n\nWhen enabled and Pi has a UI, denied `fetch_content` calls trigger an interactive prompt that offers four outcomes: approve once, approve and persist the domain to `allowedFetchDomains`, approve the domain for the current session only, or deny.",
+      "type": "boolean",
+      "default": false
+    },
+    "allowedFetchDomains": {
+      "description": "Lowercase hostnames for which fetch_content is auto-approved when allowWebAccess is enabled.",
+      "markdownDescription": "Lowercase hostnames for which `fetch_content` is auto-approved when `allowWebAccess` is enabled.\n\nMerged across scopes by union (lowercased + deduplicated). Entries are normally added via the interactive `fetch_content` prompt's \"always allow\" action, but can also be set directly here.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "default": []
+    },
+    "hooks": {
+      "description": "Claude-Code-compatible PreToolUse hooks. Only the global config contributes hooks; project config and agent frontmatter do not contribute or override them.",
+      "markdownDescription": "Claude-Code-compatible `PreToolUse` hooks.\n\nEach matcher's `matcher` field is a regex compiled as `^(?:matcher)$` against the Claude-Code-style tool name (e.g. `Bash`, `Edit`, `mcp__server__tool`). The optional `if` clause supplies a `Tool(pattern)` filter over the tool-specific input field.\n\nFor each matching command, the extension spawns `sh -c command.command` with a JSON payload on stdin. Exit 0 + a valid JSON `hookSpecificOutput.permissionDecision` returns that decision; exit 2 → deny (stderr becomes the reason); other exits and empty/invalid output defer to the normal permission gates. The `updatedInput` and `additionalContext` fields are accepted but not currently honored.\n\nOnly configurable at the **global** scope; project and per-agent scopes do not contribute hooks.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "PreToolUse": {
+          "description": "Matchers evaluated before each tool call.",
+          "type": "array",
+          "items": { "$ref": "#/$defs/preToolUseMatcher" },
+          "default": []
+        }
+      }
+    },
     "piInfrastructureReadPaths": {
       "description": "Additional directories to auto-allow for reads as Pi infrastructure, bypassing the external_directory gate. Supports ~ expansion and wildcard patterns (* and ?).",
       "markdownDescription": "Additional directories to auto-allow for reads as Pi infrastructure, bypassing the `external_directory` gate.\n\nThe extension auto-discovers the global node_modules root (walks up from the extension's install path; falls back to `npm root -g` from a dev checkout), `agentDir`, `agentDir/git`, and project-local `.pi/npm/` and `.pi/git/`. Add entries here for edge cases where auto-discovery is insufficient (e.g. custom `npmCommand` pointing to pnpm).\n\nSupports `~`/`$HOME` expansion. Entries may be plain directory prefixes or wildcard patterns using `*` (matches any characters, including `/`) and `?` (matches exactly one character). `**` and `*` are equivalent — both cross directory boundaries.",
@@ -53,7 +89,7 @@
     },
     "permission": {
       "description": "Flat permission policy. Each key is a surface name; values are a PermissionState string (catch-all) or a pattern→action map.",
-      "markdownDescription": "Flat permission policy.\n\nEach top-level key is a surface name:\n- `\"*\"` — universal fallback (replaces `defaultPolicy.tools` from the legacy format)\n- Tool names (`read`, `write`, `bash`, `mcp`, `skill`, `external_directory`, `path`, etc.)\n\nA **string** value is shorthand for `{ \"*\": action }` (surface-level catch-all).\nAn **object** value maps wildcard patterns to actions — last matching pattern wins.\n\nFor path-bearing tools (`read`, `write`, `edit`, `find`, `grep`, `ls`), patterns are matched against the file path from `input.path`. For example, `\"read\": { \"*\": \"allow\", \"*.env\": \"deny\" }` allows reads but denies `.env` files.\n\nThe `path` surface is a cross-cutting gate that applies to **all** file access — both Pi tools and bash commands. A `path` deny cannot be overridden by a per-tool allow. Use it to protect sensitive files (`.env`, `~/.ssh/*`) from all tools at once.\n\n**Merge order (lowest → highest precedence):** global → project → per-agent frontmatter.",
+      "markdownDescription": "Flat permission policy.\n\nEach top-level key is a surface name:\n- `\"*\"` — universal fallback (replaces `defaultPolicy.tools` from the legacy format)\n- Tool names (`read`, `write`, `bash`, `mcp`, `skill`, `external_directory`, `path`, etc.)\n\nA **string** value is shorthand for `{ \"*\": action }` (surface-level catch-all).\nAn **object** value maps wildcard patterns to actions — last matching pattern wins.\n\nFor path-bearing tools (`read`, `write`, `edit`, `find`, `grep`, `ls`), patterns are matched against the file path from `input.path`. For example, `\"read\": { \"*\": \"allow\", \"*.env\": \"deny\" }` allows reads but denies `.env` files.\n\nThe `path` surface is a cross-cutting gate that applies to **all** file access — both Pi tools and bash commands. A `path` deny cannot be overridden by a per-tool allow. Use it to protect sensitive files (`.env`, `~/.ssh/*`) from all tools at once.\n\n**Merge order (lowest → highest precedence):** global config → project config → global agent frontmatter → project agent frontmatter.",
       "type": "object",
       "propertyNames": {
         "description": "A surface name or the universal fallback key '*'.",
@@ -98,6 +134,53 @@
     }
   },
   "$defs": {
+    "preToolUseMatcher": {
+      "description": "A regex matcher and its associated hook commands.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["matcher", "hooks"],
+      "properties": {
+        "matcher": {
+          "description": "Regex source compiled as ^(?:matcher)$ against the Claude-Code-style tool name (e.g. 'Bash', 'Edit', 'mcp__server__.*').",
+          "type": "string",
+          "minLength": 1
+        },
+        "hooks": {
+          "description": "Hook commands run sequentially when the matcher matches.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/preToolUseHookCommand" }
+        }
+      }
+    },
+    "preToolUseHookCommand": {
+      "description": "A single PreToolUse hook command.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "command"],
+      "properties": {
+        "type": {
+          "description": "Always 'command' — only shell commands are supported today.",
+          "const": "command"
+        },
+        "command": {
+          "description": "Shell command to execute via `sh -c`. Receives the PreToolUse JSON payload on stdin.",
+          "type": "string",
+          "minLength": 1
+        },
+        "if": {
+          "description": "Optional Tool(pattern) clause that filters by the tool-specific input field (Bash→command, Read/Write/Edit→file_path, Grep→path|pattern, Glob→pattern).",
+          "type": "string",
+          "minLength": 1
+        },
+        "timeout": {
+          "description": "Per-command timeout in seconds. Default 10.",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 10
+        }
+      }
+    },
     "permissionState": {
       "description": "A permission decision: allow (permit silently), deny (block with error), or ask (prompt the user for confirmation).",
       "oneOf": [

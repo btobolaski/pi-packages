@@ -10,6 +10,19 @@ export interface PermissionSystemExtensionConfig {
   debugLog: boolean;
   permissionReviewLog: boolean;
   yoloMode: boolean;
+  /**
+   * Auto-approve `edit` and `write` calls that target a path inside the
+   * current working directory, even when a deny rule would otherwise apply.
+   */
+  allowLocalEdits: boolean;
+  /**
+   * Auto-approve web search tools and present a per-domain dialog for
+   * `fetch_content`. Persisted domain approvals live in
+   * `allowedFetchDomains`.
+   */
+  allowWebAccess: boolean;
+  /** Hostnames that auto-approve `fetch_content`. Persisted via "always allow". */
+  allowedFetchDomains: string[];
   /** Additional directories to auto-allow for reads as Pi infrastructure. */
   piInfrastructureReadPaths?: string[];
   /** Max length of the inline-JSON input preview shown in permission prompts. Defaults to 200. */
@@ -22,6 +35,9 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   debugLog: false,
   permissionReviewLog: true,
   yoloMode: false,
+  allowLocalEdits: false,
+  allowWebAccess: false,
+  allowedFetchDomains: [],
 };
 
 function resolveExtensionRoot(moduleUrl = import.meta.url): string {
@@ -53,20 +69,50 @@ export function normalizeOptionalPositiveInt(raw: unknown): number | undefined {
     : undefined;
 }
 
+function normalizeStringArray(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  if (!raw.every((value): value is string => typeof value === "string")) {
+    return undefined;
+  }
+  return raw;
+}
+
+function normalizeAllowedFetchDomains(raw: unknown): string[] {
+  const list = normalizeStringArray(raw);
+  if (!list) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of list) {
+    const trimmed = value.trim().toLowerCase();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
 export function normalizePermissionSystemConfig(
   raw: unknown,
 ): PermissionSystemExtensionConfig {
   const record = toRecord(raw);
-  const rawPaths = record.piInfrastructureReadPaths;
-  const piInfrastructureReadPaths: string[] | undefined =
-    Array.isArray(rawPaths) &&
-    rawPaths.every((p): p is string => typeof p === "string")
-      ? rawPaths
-      : undefined;
+  const piInfrastructureReadPaths = normalizeStringArray(
+    record.piInfrastructureReadPaths,
+  );
   const result: PermissionSystemExtensionConfig = {
     debugLog: record.debugLog === true,
     permissionReviewLog: record.permissionReviewLog !== false,
     yoloMode: record.yoloMode === true,
+    allowLocalEdits: record.allowLocalEdits === true,
+    allowWebAccess: record.allowWebAccess === true,
+    allowedFetchDomains: normalizeAllowedFetchDomains(
+      record.allowedFetchDomains,
+    ),
   };
   if (piInfrastructureReadPaths !== undefined) {
     result.piInfrastructureReadPaths = piInfrastructureReadPaths;

@@ -1,4 +1,7 @@
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionCommandContext,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
 import {
   getActiveAgentName,
@@ -7,7 +10,10 @@ import {
 import type { PermissionSystemExtensionConfig } from "./extension-config";
 import type { ExtensionPaths } from "./extension-paths";
 import type { ForwardingController } from "./forwarding-manager";
-import type { PermissionPromptDecision } from "./permission-dialog";
+import type {
+  PermissionPromptDecision,
+  WebAccessPermissionDecision,
+} from "./permission-dialog";
 import type { PermissionManager } from "./permission-manager";
 import type { PromptPermissionDetails } from "./permission-prompter";
 import type { Rule } from "./rule";
@@ -38,6 +44,37 @@ export interface PermissionSessionRuntimeDeps {
     ctx: ExtensionContext,
     details: PromptPermissionDetails,
   ): Promise<PermissionPromptDecision>;
+  /** Prompt the user for a per-domain `fetch_content` decision. */
+  promptWebAccessPermission(
+    ctx: ExtensionContext,
+    details: PromptPermissionDetails,
+    domain: string,
+  ): Promise<WebAccessPermissionDecision>;
+  /**
+   * Persist a `fetch_content` domain to the extension config's
+   * `allowedFetchDomains` list and sync UI status.
+   *
+   * Returns `{ persisted: true, domains }` with the updated
+   * deduplicated/lowercased list when the global config was saved
+   * successfully, or `{ persisted: false, domains }` when the save failed
+   * and the on-disk config was left unchanged. Callers can then fall back
+   * to session-only allow-listing.
+   */
+  persistAllowedFetchDomain(
+    domain: string,
+    ctx: ExtensionCommandContext,
+  ): PersistAllowedFetchDomainResult;
+}
+
+/**
+ * Outcome of persisting a fetch-content domain.
+ *
+ * `domains` is the current `allowedFetchDomains` list — the updated list when
+ * `persisted: true`, or the unchanged previous list when `persisted: false`.
+ */
+export interface PersistAllowedFetchDomainResult {
+  persisted: boolean;
+  domains: string[];
 }
 
 /**
@@ -62,6 +99,7 @@ export class PermissionSession {
   private knownAgentName: string | null = null;
   private toolsCacheKey: string | null = null;
   private promptCacheKey: string | null = null;
+  private readonly allowedFetchDomains = new Set<string>();
 
   constructor(
     private readonly paths: ExtensionPaths,
@@ -122,6 +160,11 @@ export class PermissionSession {
     return this.permissionManager.getPolicyCacheStamp(agentName);
   }
 
+  /** Return configured PreToolUse hooks (global scope only). */
+  getHooks(): import("./hook-types").HooksConfig | undefined {
+    return this.permissionManager.getHooks();
+  }
+
   // ── Session rules (delegates to SessionRules) ──────────────────────────
 
   getSessionRuleset(): Rule[] {
@@ -148,6 +191,7 @@ export class PermissionSession {
     this.skillEntries = [];
     this.toolsCacheKey = null;
     this.promptCacheKey = null;
+    this.allowedFetchDomains.clear();
     this.activate(ctx);
   }
 
@@ -160,6 +204,7 @@ export class PermissionSession {
     this.skillEntries = [];
     this.toolsCacheKey = null;
     this.promptCacheKey = null;
+    this.allowedFetchDomains.clear();
     this.deactivate();
   }
 
@@ -175,6 +220,7 @@ export class PermissionSession {
     this.skillEntries = [];
     this.toolsCacheKey = null;
     this.promptCacheKey = null;
+    this.allowedFetchDomains.clear();
   }
 
   // ── Agent-start caching ────────────────────────────────────────────────
@@ -273,6 +319,46 @@ export class PermissionSession {
     details: PromptPermissionDetails,
   ): Promise<PermissionPromptDecision> {
     return this.runtimeDeps.promptPermission(ctx, details);
+  }
+
+  /** Prompt the user for a per-domain `fetch_content` decision. */
+  promptWebAccess(
+    ctx: ExtensionContext,
+    details: PromptPermissionDetails,
+    domain: string,
+  ): Promise<WebAccessPermissionDecision> {
+    return this.runtimeDeps.promptWebAccessPermission(ctx, details, domain);
+  }
+
+  /**
+   * Persist a `fetch_content` domain into the extension config's
+   * `allowedFetchDomains` list. See
+   * {@link PersistAllowedFetchDomainResult} for the shape of the return.
+   */
+  persistAllowedFetchDomain(
+    domain: string,
+    ctx: ExtensionCommandContext,
+  ): PersistAllowedFetchDomainResult {
+    return this.runtimeDeps.persistAllowedFetchDomain(domain, ctx);
+  }
+
+  // ── Per-session fetch_content domain allow-list ────────────────────────
+
+  /**
+   * Domains the user temporarily approved for `fetch_content` during the
+   * current session. Cleared on `resetForNewSession`, `reload`, and
+   * `shutdown`.
+   */
+  getAllowedFetchDomains(): ReadonlySet<string> {
+    return this.allowedFetchDomains;
+  }
+
+  /** Add a domain to the session-scoped `fetch_content` allow-list. */
+  addAllowedFetchDomain(domain: string): void {
+    const normalized = domain.trim().toLowerCase();
+    if (normalized) {
+      this.allowedFetchDomains.add(normalized);
+    }
   }
 
   /** Generate a unique ID for a permission request. */

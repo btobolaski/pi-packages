@@ -81,7 +81,7 @@ Config lives in one JSON file per scope:
 | Global  | `~/.pi/agent/extensions/pi-permission-system/config.json` |
 | Project | `<cwd>/.pi/extensions/pi-permission-system/config.json`   |
 
-Project overrides global; per-agent YAML frontmatter overrides both.
+Each subsequent scope overrides the previous: global config → project config → global agent frontmatter → project agent frontmatter.
 
 Within a surface map like `bash` or `mcp`, **last matching rule wins** — put broad catch-alls first and specific overrides after.
 

@@ -116,6 +116,9 @@ describe("normalizePermissionSystemConfig", () => {
       debugLog: true,
       permissionReviewLog: false,
       yoloMode: true,
+      allowLocalEdits: false,
+      allowWebAccess: false,
+      allowedFetchDomains: [],
     });
   });
 
@@ -151,6 +154,9 @@ describe("normalizePermissionSystemConfig", () => {
       debugLog: false,
       permissionReviewLog: true,
       yoloMode: false,
+      allowLocalEdits: false,
+      allowWebAccess: false,
+      allowedFetchDomains: [],
     });
   });
 

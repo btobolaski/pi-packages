@@ -85,6 +85,14 @@ function makeRuntimeDeps(): PermissionSessionRuntimeDeps {
     promptPermission: vi
       .fn()
       .mockResolvedValue({ approved: true, state: "approved" }),
+    promptWebAccessPermission: vi.fn().mockResolvedValue({
+      approved: true,
+      state: "approved",
+      domainAction: "allow_once",
+    }),
+    persistAllowedFetchDomain: vi
+      .fn()
+      .mockReturnValue({ persisted: true, domains: [] }),
   };
 }
 

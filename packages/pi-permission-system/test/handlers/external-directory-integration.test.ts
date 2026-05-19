@@ -81,6 +81,8 @@ function makeSession(
     resolveAgentName: vi.fn().mockReturnValue(null),
     checkPermission: makeCheckPermission("deny"),
     getToolPermission: vi.fn().mockReturnValue("allow"),
+    getHooks: vi.fn().mockReturnValue(undefined),
+    getAllowedFetchDomains: vi.fn().mockReturnValue(new Set<string>()),
     getSessionRuleset: vi.fn().mockReturnValue([]),
     recordSessionApproval: vi.fn(),
     getActiveSkillEntries: vi.fn().mockReturnValue([]),

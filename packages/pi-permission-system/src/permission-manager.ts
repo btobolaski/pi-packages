@@ -1,4 +1,5 @@
 import { isPermissionState } from "./common";
+import type { HooksConfig } from "./hook-types";
 import { normalizeInput } from "./input-normalizer";
 import { normalizeFlatConfig } from "./normalize";
 import {
@@ -71,6 +72,14 @@ export class PermissionManager {
 
   getResolvedPolicyPaths(): ResolvedPolicyPaths {
     return this.loader.getResolvedPolicyPaths();
+  }
+
+  /**
+   * Return PreToolUse hook configuration sourced from the global scope only.
+   * Hooks are not currently per-project or per-agent.
+   */
+  getHooks(): HooksConfig | undefined {
+    return this.loader.loadGlobalConfig().hooks;
   }
 
   getPolicyCacheStamp(agentName?: string): string {

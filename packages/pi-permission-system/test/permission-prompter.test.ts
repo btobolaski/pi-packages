@@ -56,6 +56,11 @@ function makeDeps(
     requestPermissionDecisionFromUi: vi
       .fn()
       .mockResolvedValue({ approved: true, state: "approved" }),
+    requestWebAccessPermissionFromUi: vi.fn().mockResolvedValue({
+      approved: true,
+      state: "approved",
+      domainAction: "allow_once",
+    }),
     ...overrides,
   };
 }

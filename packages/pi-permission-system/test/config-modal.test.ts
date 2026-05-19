@@ -83,6 +83,7 @@ test("permission-system command completions expose top-level config actions", ()
       getConfig: () => config,
       setConfig: (next: PermissionSystemExtensionConfig) => {
         config = next;
+        return true;
       },
       getConfigPath: () => configPath,
     };
@@ -124,6 +125,7 @@ test("permission-system command handlers manage config summary, persistence, and
   const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-command-"));
   const configPath = join(baseDir, "config.json");
   let config: PermissionSystemExtensionConfig = {
+    ...DEFAULT_EXTENSION_CONFIG,
     debugLog: true,
     permissionReviewLog: false,
     yoloMode: true,
@@ -152,6 +154,7 @@ test("permission-system command handlers manage config summary, persistence, and
           JSON.parse(readFileSync(configPath, "utf-8")) as unknown,
         );
         expect(config).not.toEqual(currentConfig);
+        return true;
       },
       getConfigPath: () => configPath,
     };
@@ -250,7 +253,7 @@ test("show output includes rule origins when getComposedRules is provided", asyn
 
   const controller = {
     getConfig: () => config,
-    setConfig: () => {},
+    setConfig: () => true,
     getConfigPath: () => "/fake/config.json",
     getComposedRules: () => composedRules,
   };
@@ -283,7 +286,7 @@ test("show output omits rule summary when getComposedRules is not provided", asy
 
   const controller = {
     getConfig: () => config,
-    setConfig: () => {},
+    setConfig: () => true,
     getConfigPath: () => "/fake/config.json",
     // no getComposedRules
   };

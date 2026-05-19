@@ -9,7 +9,7 @@ One unified config file per scope:
 | Global  | `~/.pi/agent/extensions/pi-permission-system/config.json` (respects `PI_CODING_AGENT_DIR`) |
 | Project | `<cwd>/.pi/extensions/pi-permission-system/config.json`                                    |
 
-Project config overrides global config; per-agent frontmatter overrides both.
+Higher-precedence scopes override lower; see [Merge Precedence](#merge-precedence) for the full order.
 
 > **Coming from OpenCode?**
 > This extension's permission model was inspired by OpenCode's.
@@ -30,7 +30,9 @@ Project config overrides global config; per-agent frontmatter overrides both.
 4. Project agent frontmatter
 
 The `permission` object uses deep-shallow merge: string-vs-string replaces; both-object shallow-merges pattern maps; string-vs-object the override wins entirely.
-Scalar fields (`debugLog`, `permissionReviewLog`, `yoloMode`) use simple replacement.
+Scalar fields (`debugLog`, `permissionReviewLog`, `yoloMode`, `allowLocalEdits`, `allowWebAccess`) use simple replacement.
+`allowedFetchDomains` is unioned across scopes (dedup by lowercase).
+`hooks` are read from the global config only — project config and agent frontmatter do not contribute or override hooks.
 
 ## Full Example
 
@@ -42,6 +44,9 @@ Scalar fields (`debugLog`, `permissionReviewLog`, `yoloMode`) use simple replace
   "debugLog": false,
   "permissionReviewLog": true,
   "yoloMode": false,
+  "allowLocalEdits": false,
+  "allowWebAccess": false,
+  "allowedFetchDomains": [],
   "toolInputPreviewMaxLength": 400,
   "toolTextSummaryMaxLength": 120,
   "piInfrastructureReadPaths": [],
@@ -71,14 +76,18 @@ Scalar fields (`debugLog`, `permissionReviewLog`, `yoloMode`) use simple replace
 
 ## Runtime Knobs
 
-| Key                         | Default | Description                                                                                                                                          |
-| --------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `debugLog`                  | `false` | Enables verbose diagnostic logging to `logs/pi-permission-system-debug.jsonl`                                                                        |
-| `permissionReviewLog`       | `true`  | Enables the permission request/denial review log at `logs/pi-permission-system-permission-review.jsonl`                                              |
-| `yoloMode`                  | `false` | Auto-approves `ask` results instead of prompting when yolo mode is enabled                                                                           |
-| `toolInputPreviewMaxLength` | `200`   | Max characters of inline JSON shown in permission prompts for tool inputs. Omit to use the default. Set to a large value to disable truncation.      |
-| `toolTextSummaryMaxLength`  | `80`    | Max characters of inline pattern/path summaries (grep patterns, find globs, ls paths) in permission prompts. Omit to use the default.                |
-| `piInfrastructureReadPaths` | `[]`    | Extra directories to auto-allow for reads, bypassing the `external_directory` gate. Supports `~`/`$HOME` expansion and wildcard patterns (`*`, `?`). |
+| Key                         | Default | Description                                                                                                                                                                          |
+| --------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `debugLog`                  | `false` | Enables verbose diagnostic logging to `logs/pi-permission-system-debug.jsonl`                                                                                                        |
+| `permissionReviewLog`       | `true`  | Enables the permission request/denial review log at `logs/pi-permission-system-permission-review.jsonl`                                                                              |
+| `yoloMode`                  | `false` | Auto-approves `ask` results instead of prompting when yolo mode is enabled                                                                                                           |
+| `allowLocalEdits`           | `false` | Auto-approves the tool-level check for `edit` / `write` inside `cwd`; cross-cutting `path` / `external_directory` gates and later PreToolUse hooks still apply                       |
+| `allowWebAccess`            | `false` | Auto-approves `web_search` / `get_search_content`, and enables the per-domain `fetch_content` dialog                                                                                |
+| `allowedFetchDomains`       | `[]`    | Persistent domain allow-list for `fetch_content`; lowercased and deduplicated                                                                                                        |
+| `toolInputPreviewMaxLength` | `200`   | Max characters of inline JSON shown in permission prompts for tool inputs. Omit to use the default. Set a large value to disable truncation.                                        |
+| `toolTextSummaryMaxLength`  | `80`    | Max characters of inline pattern/path summaries in permission prompts. Omit to use the default.                                                                                     |
+| `piInfrastructureReadPaths` | `[]`    | Extra directories to auto-allow for reads, bypassing the `external_directory` gate. Supports `~`/`$HOME` expansion and wildcard patterns (`*`, `?`).                                 |
+| `hooks`                     | n/a     | PreToolUse hook configuration (Claude Code-compatible). See [PreToolUse Hooks](#pretooluse-hooks).                                                                                   |
 
 Both logs write to `~/.pi/agent/extensions/pi-permission-system/logs/`.
 No debug output is printed to the terminal.
@@ -430,11 +439,11 @@ name: my-agent
 permission:
   read: allow
   write: deny
-  mcp: allow
   bash:
     git status: allow
     git *: ask
   mcp:
+    "*": allow
     chrome_devtools_*: deny
     exa_*: allow
   skill:
@@ -573,3 +582,71 @@ npx --yes ajv-cli@5 validate \
 ```
 
 **Editor tip:** Add `"$schema": "./schemas/permissions.schema.json"` to your config for autocomplete support.
+
+## PreToolUse Hooks
+
+The extension supports [Claude Code-compatible PreToolUse hooks](https://docs.anthropic.com/claude-code/settings).
+Hooks run after the configured permission overrides (`allowLocalEdits`, `allowWebAccess`) and can `allow`, `deny`, `ask`, or `defer` a tool call.
+They are sourced from the global scope only — per-project and per-agent hooks are not currently supported.
+
+```jsonc
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./scripts/audit-bash.sh",
+            "if": "Bash(rm -rf *)",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Matcher names use the **Claude Code** tool naming (`Bash`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, `LS`, `Skill`, `mcp__server__tool`), not the Pi tool names.
+The `matcher` value is compiled as an anchored regex (`^(?:<matcher>)$`), so alternation (`Bash|Read`) works.
+
+The optional `if` clause additionally filters by the tool's input field — e.g.
+`Bash(rm -rf *)` matches when `input.command` matches `rm -rf *`,
+`Edit(*/secret.ts)` matches when `input.file_path` (or `input.path`) matches `*/secret.ts`.
+Wildcards use the same syntax as the rest of the permission system.
+
+### Hook protocol
+
+Each hook command receives a JSON object on stdin matching the Claude Code `PreToolUse` payload:
+
+```jsonc
+{
+  "session_id": "…",
+  "cwd": "…",
+  "permission_mode": "default" /* or "yolo" */,
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": { "command": "…" },
+  "tool_use_id": "…",
+  "transcript_path": "…"
+}
+```
+
+The hook can respond by:
+
+- printing JSON of shape `{ "hookSpecificOutput": { "permissionDecision": "allow" | "deny" | "ask" | "defer", "permissionDecisionReason": "…" } }` to stdout and exiting 0
+- exiting with code `2` and writing a reason to stderr (treated as `deny`)
+- any other exit (including non-zero exits, parse errors, timeouts) is treated as `defer` — the policy state is left unchanged
+
+### Merging multiple hooks
+
+When several hooks match a single call, their decisions merge with priority
+`deny > ask > allow > defer`.
+All non-empty reasons are concatenated into a single deny message.
+
+### Limitations
+
+Pi's tool-call hook surface only allows blocking with a reason.
+If a hook returns `updatedInput` or `additionalContext`, these are logged as `hook.updated_input_not_supported` / `hook.additional_context_not_supported` to the debug log but **not** propagated to the agent runtime.

@@ -211,6 +211,7 @@ describe("createExtensionRuntime", () => {
   it("allows config to be updated", () => {
     const runtime = createExtensionRuntime({ agentDir: "/test/agent" });
     const newConfig = {
+      ...DEFAULT_EXTENSION_CONFIG,
       debugLog: true,
       permissionReviewLog: false,
       yoloMode: false,
@@ -247,6 +248,7 @@ describe("createExtensionRuntime", () => {
       getConfig: () => typeof DEFAULT_EXTENSION_CONFIG;
     };
     const updatedConfig = {
+      ...DEFAULT_EXTENSION_CONFIG,
       debugLog: true,
       permissionReviewLog: false,
       yoloMode: false,

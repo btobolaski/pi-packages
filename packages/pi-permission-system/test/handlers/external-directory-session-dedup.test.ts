@@ -118,6 +118,8 @@ function makeStatefulSession(
     resolveAgentName: vi.fn().mockReturnValue(null),
     checkPermission,
     getToolPermission: vi.fn().mockReturnValue("allow"),
+    getHooks: vi.fn().mockReturnValue(undefined),
+    getAllowedFetchDomains: vi.fn().mockReturnValue(new Set<string>()),
     getSessionRuleset,
     recordSessionApproval,
     getActiveSkillEntries: vi.fn().mockReturnValue([]),

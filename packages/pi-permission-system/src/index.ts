@@ -13,7 +13,10 @@ import {
   SessionLifecycleHandler,
 } from "./handlers";
 import { buildInputForSurface } from "./input-normalizer";
-import { requestPermissionDecisionFromUi } from "./permission-dialog";
+import {
+  requestPermissionDecisionFromUi,
+  requestWebAccessPermissionFromUi,
+} from "./permission-dialog";
 import { registerPermissionRpcHandlers } from "./permission-event-rpc";
 import { emitReadyEvent } from "./permission-events";
 import { PermissionPrompter } from "./permission-prompter";
@@ -55,6 +58,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     forwardingDir: runtime.forwardingDir,
     registry: subagentRegistry,
     requestPermissionDecisionFromUi,
+    requestWebAccessPermissionFromUi,
   });
 
   const forwardingDeps: PermissionForwardingDeps = {
@@ -96,6 +100,36 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
           ),
         }),
       promptPermission: (ctx, details) => prompter.prompt(ctx, details),
+      promptWebAccessPermission: (ctx, details, domain) =>
+        prompter.promptWebAccess(ctx, details, domain),
+      persistAllowedFetchDomain: (domain, ctx) => {
+        const normalized = domain.trim().toLowerCase();
+        if (!normalized) {
+          return {
+            persisted: false,
+            domains: runtime.config.allowedFetchDomains,
+          };
+        }
+        const existing = new Set(
+          runtime.config.allowedFetchDomains.map((value) =>
+            value.toLowerCase(),
+          ),
+        );
+        if (existing.has(normalized)) {
+          // Already persisted from an earlier session/decision — treat as success.
+          return {
+            persisted: true,
+            domains: runtime.config.allowedFetchDomains,
+          };
+        }
+        const nextDomains = [...runtime.config.allowedFetchDomains, normalized];
+        const ok = saveExtensionConfig(
+          runtime,
+          { ...runtime.config, allowedFetchDomains: nextDomains },
+          ctx,
+        );
+        return { persisted: ok, domains: runtime.config.allowedFetchDomains };
+      },
     },
   );
 

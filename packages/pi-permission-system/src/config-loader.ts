@@ -9,6 +9,8 @@ import {
   getLegacyProjectPolicyPath,
   getProjectConfigPath,
 } from "./config-paths";
+import { normalizeHooksConfig } from "./hook-normalize";
+import type { HooksConfig } from "./hook-types";
 import { mergeFlatPermissions } from "./permission-merge";
 import type { FlatPermissionConfig } from "./types";
 
@@ -21,9 +23,15 @@ export interface UnifiedPermissionConfig {
   debugLog?: boolean;
   permissionReviewLog?: boolean;
   yoloMode?: boolean;
+  allowLocalEdits?: boolean;
+  allowWebAccess?: boolean;
+  allowedFetchDomains?: string[];
 
   // Flat permission policy
   permission?: FlatPermissionConfig;
+
+  // PreToolUse hook configuration (Claude Code settings.json shape)
+  hooks?: HooksConfig;
 }
 
 export interface UnifiedConfigLoadResult {
@@ -117,6 +125,28 @@ function normalizeOptionalBoolean(value: unknown): boolean | undefined {
   return undefined;
 }
 
+function normalizeAllowedFetchDomainsList(
+  value: unknown,
+): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") {
+      continue;
+    }
+    const trimmed = entry.trim().toLowerCase();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
 /**
  * Normalize a raw `permission` value from parsed JSON into a FlatPermissionConfig.
  * Drops non-object top-level values, invalid PermissionState strings, and
@@ -183,9 +213,25 @@ export function normalizeUnifiedConfig(raw: unknown): {
   const yoloMode = normalizeOptionalBoolean(record.yoloMode);
   if (yoloMode !== undefined) config.yoloMode = yoloMode;
 
+  const allowLocalEdits = normalizeOptionalBoolean(record.allowLocalEdits);
+  if (allowLocalEdits !== undefined) config.allowLocalEdits = allowLocalEdits;
+
+  const allowWebAccess = normalizeOptionalBoolean(record.allowWebAccess);
+  if (allowWebAccess !== undefined) config.allowWebAccess = allowWebAccess;
+
+  const allowedFetchDomains = normalizeAllowedFetchDomainsList(
+    record.allowedFetchDomains,
+  );
+  if (allowedFetchDomains !== undefined)
+    config.allowedFetchDomains = allowedFetchDomains;
+
   // Flat permission policy
   const permission = normalizeFlatPermissionValue(record.permission);
   if (permission !== undefined) config.permission = permission;
+
+  // PreToolUse hooks
+  const hooks = normalizeHooksConfig(record.hooks);
+  if (hooks !== undefined) config.hooks = hooks;
 
   return { config, issues };
 }
@@ -203,11 +249,35 @@ export function mergeUnifiedConfigs(
   const merged: UnifiedPermissionConfig = {};
 
   // Scalars: override replaces base when defined
-  for (const key of ["debugLog", "permissionReviewLog", "yoloMode"] as const) {
+  for (const key of [
+    "debugLog",
+    "permissionReviewLog",
+    "yoloMode",
+    "allowLocalEdits",
+    "allowWebAccess",
+  ] as const) {
     const value = override[key] ?? base[key];
     if (value !== undefined) {
       merged[key] = value;
     }
+  }
+
+  // allowedFetchDomains: union (override-then-base), dedup by lowercase
+  const baseDomains = base.allowedFetchDomains;
+  const overrideDomains = override.allowedFetchDomains;
+  if (baseDomains || overrideDomains) {
+    const seen = new Set<string>();
+    const combined: string[] = [];
+    for (const list of [overrideDomains, baseDomains]) {
+      if (!list) continue;
+      for (const domain of list) {
+        const key = domain.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        combined.push(key);
+      }
+    }
+    merged.allowedFetchDomains = combined;
   }
 
   // Permission: deep-shallow merge
@@ -219,6 +289,16 @@ export function mergeUnifiedConfigs(
     merged.permission = basePerm;
   } else if (overridePerm) {
     merged.permission = overridePerm;
+  }
+
+  // Hooks: override wins when present (matchers carry compiled regex; we do not
+  // attempt to merge matcher arrays from multiple scopes).
+  const overrideHooks = override.hooks;
+  const baseHooks = base.hooks;
+  if (overrideHooks !== undefined) {
+    merged.hooks = overrideHooks;
+  } else if (baseHooks !== undefined) {
+    merged.hooks = baseHooks;
   }
 
   return merged;
@@ -343,5 +423,32 @@ export function loadUnifiedConfig(path: string): UnifiedConfigLoadResult {
       config: {},
       issues: [`Failed to read config at '${path}': ${message}`],
     };
+  }
+}
+
+/**
+ * Load a unified config file as its raw parsed JSON, without normalization.
+ *
+ * Used by `saveExtensionConfig` so we can spread the existing on-disk shape
+ * (including fields like `hooks` whose normalized form carries non-serializable
+ * `matcherRegex: RegExp` values) back into the saved file unchanged.
+ *
+ * Returns an empty object when the file is missing or unreadable; the calling
+ * save path then writes a fresh document.
+ */
+export function loadRawUnifiedConfigJson(
+  path: string,
+): Record<string, unknown> {
+  if (!existsSync(path)) {
+    return {};
+  }
+  try {
+    const raw = readFileSync(path, "utf-8");
+    const parsed = JSON.parse(stripJsonComments(raw)) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
   }
 }

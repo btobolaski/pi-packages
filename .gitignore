@@ -56,4 +56,4 @@ vite.config.ts.timestamp-*
 .direnv
 result
 
-pi-permission-system
+/pi-permission-system

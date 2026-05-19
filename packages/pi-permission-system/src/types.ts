@@ -16,10 +16,11 @@ export type FlatPermissionConfig = Record<
 
 /**
  * Per-scope permission config shape after loading and validation.
- * Holds only the flat permission map — all policy is expressed there.
+ * Holds the flat permission map and (global-scope only) PreToolUse hooks.
  */
 export interface ScopeConfig {
   permission?: FlatPermissionConfig;
+  hooks?: import("./hook-types").HooksConfig;
 }
 
 /**

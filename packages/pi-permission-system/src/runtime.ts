@@ -12,7 +12,7 @@ import {
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 
-import { loadAndMergeConfigs, loadUnifiedConfig } from "./config-loader";
+import { loadAndMergeConfigs, loadRawUnifiedConfigJson } from "./config-loader";
 import {
   DEBUG_LOG_FILENAME,
   getGlobalConfigPath,
@@ -151,27 +151,45 @@ export function refreshExtensionConfig(
     debugLog: runtimeConfig.debugLog,
     permissionReviewLog: runtimeConfig.permissionReviewLog,
     yoloMode: runtimeConfig.yoloMode,
+    allowLocalEdits: runtimeConfig.allowLocalEdits,
+    allowWebAccess: runtimeConfig.allowWebAccess,
+    allowedFetchDomains: runtimeConfig.allowedFetchDomains,
   });
 }
 
 /**
- * Save updated runtime knobs (debugLog, permissionReviewLog, yoloMode) to the
- * global config file, then update runtime.config and sync UI status.
+ * Save updated runtime knobs to the global config file, then update
+ * `runtime.config` and sync UI status.
+ *
+ * Persists `debugLog`, `permissionReviewLog`, `yoloMode`, `allowLocalEdits`,
+ * `allowWebAccess`, and `allowedFetchDomains`. Other fields already present in
+ * the on-disk config (e.g. `permission`, `hooks`, `piInfrastructureReadPaths`)
+ * are preserved unchanged.
+ *
+ * Returns `true` when the write succeeded, `false` when it failed. On failure
+ * the UI is notified and `runtime.config` is left untouched so callers can
+ * decide on a fallback (e.g. session-only allow).
  */
 export function saveExtensionConfig(
   runtime: ExtensionRuntime,
   next: PermissionSystemExtensionConfig,
   ctx: ExtensionCommandContext,
-): void {
+): boolean {
   const normalized = normalizePermissionSystemConfig(next);
   const globalPath = getGlobalConfigPath(runtime.agentDir);
 
-  const existing = loadUnifiedConfig(globalPath);
+  // Read the raw on-disk JSON rather than the normalized config: the normalized
+  // form carries compiled `matcherRegex: RegExp` instances inside `hooks` that
+  // would serialize to `{}` and corrupt a previously-valid hooks block.
+  const existing = loadRawUnifiedConfigJson(globalPath);
   const merged = {
-    ...existing.config,
+    ...existing,
     debugLog: normalized.debugLog,
     permissionReviewLog: normalized.permissionReviewLog,
     yoloMode: normalized.yoloMode,
+    allowLocalEdits: normalized.allowLocalEdits,
+    allowWebAccess: normalized.allowWebAccess,
+    allowedFetchDomains: normalized.allowedFetchDomains,
   };
 
   const tmpPath = `${globalPath}.tmp`;
@@ -192,7 +210,7 @@ export function saveExtensionConfig(
       `Failed to save permission-system config at '${globalPath}': ${message}`,
       "error",
     );
-    return;
+    return false;
   }
 
   runtime.config = normalized;
@@ -203,7 +221,12 @@ export function saveExtensionConfig(
     debugLog: normalized.debugLog,
     permissionReviewLog: normalized.permissionReviewLog,
     yoloMode: normalized.yoloMode,
+    allowLocalEdits: normalized.allowLocalEdits,
+    allowWebAccess: normalized.allowWebAccess,
+    allowedFetchDomains: normalized.allowedFetchDomains,
   });
+
+  return true;
 }
 
 /**

@@ -13,10 +13,15 @@ import type { Ruleset } from "./rule";
 
 interface PermissionSystemConfigController {
   getConfig(): PermissionSystemExtensionConfig;
+  /**
+   * Persist `next` and return whether the write succeeded. Failures are
+   * already surfaced to the user via `ctx.ui.notify`; the boolean is for
+   * callers that want to gate their own success notifications.
+   */
   setConfig(
     next: PermissionSystemExtensionConfig,
     ctx: ExtensionCommandContext,
-  ): void;
+  ): boolean;
   getConfigPath(): string;
   /** Optional: returns the composed config-layer ruleset for origin display. */
   getComposedRules?(): Ruleset;
@@ -53,6 +58,9 @@ function cloneDefaultConfig(): PermissionSystemExtensionConfig {
     debugLog: DEFAULT_EXTENSION_CONFIG.debugLog,
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
+    allowLocalEdits: DEFAULT_EXTENSION_CONFIG.allowLocalEdits,
+    allowWebAccess: DEFAULT_EXTENSION_CONFIG.allowWebAccess,
+    allowedFetchDomains: [...DEFAULT_EXTENSION_CONFIG.allowedFetchDomains],
   };
 }
 
@@ -80,6 +88,8 @@ function summarizeConfig(
 ): string {
   const knobs = [
     `yoloMode=${toOnOff(config.yoloMode)}`,
+    `allowLocalEdits=${toOnOff(config.allowLocalEdits)}`,
+    `allowWebAccess=${toOnOff(config.allowWebAccess)}`,
     `permissionReviewLog=${toOnOff(config.permissionReviewLog)}`,
     `debugLog=${toOnOff(config.debugLog)}`,
   ].join(", ");
@@ -97,6 +107,22 @@ function buildSettingItems(
       description:
         "Auto-approve ask-state permission checks, including subagent approval forwarding",
       currentValue: toOnOff(config.yoloMode),
+      values: ON_OFF,
+    },
+    {
+      id: "allowLocalEdits",
+      label: "Allow local edits",
+      description:
+        "Auto-approve edit/write tool calls for paths inside the current working directory",
+      currentValue: toOnOff(config.allowLocalEdits),
+      values: ON_OFF,
+    },
+    {
+      id: "allowWebAccess",
+      label: "Allow web access",
+      description:
+        "Auto-approve web_search/get_search_content and prompt per-domain for fetch_content",
+      currentValue: toOnOff(config.allowWebAccess),
       values: ON_OFF,
     },
     {
@@ -126,6 +152,10 @@ function applySetting(
   switch (id) {
     case "yoloMode":
       return { ...config, yoloMode: value === "on" };
+    case "allowLocalEdits":
+      return { ...config, allowLocalEdits: value === "on" };
+    case "allowWebAccess":
+      return { ...config, allowWebAccess: value === "on" };
     case "permissionReviewLog":
       return { ...config, permissionReviewLog: value === "on" };
     case "debugLog":
@@ -140,6 +170,8 @@ function syncSettingValues(
   config: PermissionSystemExtensionConfig,
 ): void {
   settingsList.updateValue("yoloMode", toOnOff(config.yoloMode));
+  settingsList.updateValue("allowLocalEdits", toOnOff(config.allowLocalEdits));
+  settingsList.updateValue("allowWebAccess", toOnOff(config.allowWebAccess));
   settingsList.updateValue(
     "permissionReviewLog",
     toOnOff(config.permissionReviewLog),
@@ -223,8 +255,10 @@ function handleArgs(
   }
 
   if (normalized === "reset") {
-    controller.setConfig(cloneDefaultConfig(), ctx);
-    ctx.ui.notify("Permission system settings reset to defaults.", "info");
+    const saved = controller.setConfig(cloneDefaultConfig(), ctx);
+    if (saved) {
+      ctx.ui.notify("Permission system settings reset to defaults.", "info");
+    }
     return true;
   }
 

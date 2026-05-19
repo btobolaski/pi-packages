@@ -89,6 +89,7 @@ export function makeSession(
     resolveAgentName: vi.fn().mockReturnValue(null),
     checkPermission: vi.fn().mockReturnValue(makeCheckResult()),
     getToolPermission: vi.fn().mockReturnValue("allow"),
+    getHooks: vi.fn().mockReturnValue(undefined),
     getSessionRuleset: vi.fn().mockReturnValue([]),
     recordSessionApproval: vi.fn(),
     getActiveSkillEntries: vi.fn().mockReturnValue([]),
@@ -99,6 +100,16 @@ export function makeSession(
     config: DEFAULT_EXTENSION_CONFIG,
     canPrompt: vi.fn().mockReturnValue(true),
     prompt: vi.fn().mockResolvedValue({ approved: true, state: "approved" }),
+    promptWebAccess: vi.fn().mockResolvedValue({
+      approved: true,
+      state: "approved",
+      domainAction: "allow_once",
+    }),
+    getAllowedFetchDomains: vi.fn().mockReturnValue(new Set<string>()),
+    addAllowedFetchDomain: vi.fn(),
+    persistAllowedFetchDomain: vi
+      .fn()
+      .mockReturnValue({ persisted: true, domains: [] }),
     createPermissionRequestId: vi.fn().mockReturnValue("req-id"),
     ...overrides,
   } as unknown as PermissionSession;

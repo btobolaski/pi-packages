@@ -27,6 +27,15 @@ describe("unifiedConfigSchema", () => {
         debugLog: true,
         permissionReviewLog: false,
         yoloMode: true,
+        allowLocalEdits: true,
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "Bash|Write|Edit",
+              hooks: [{ type: "command", command: "policy-check" }],
+            },
+          ],
+        },
         toolInputPreviewMaxLength: 1000,
         toolTextSummaryMaxLength: 120,
         piInfrastructureReadPaths: ["/extra/path"],
@@ -105,6 +114,57 @@ describe("unifiedConfigSchema", () => {
     it("rejects a deny-with-reason with a non-string reason", () => {
       const result = unifiedConfigSchema.safeParse({
         permission: { bash: { "npm *": { action: "deny", reason: 42 } } },
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe("hooks field", () => {
+    it("accepts a valid PreToolUse hook", () => {
+      const result = unifiedConfigSchema.safeParse({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "Bash|Read",
+              hooks: [
+                {
+                  type: "command",
+                  command: "policy-check",
+                  if: "Bash(git *)",
+                  timeout: 5,
+                },
+              ],
+            },
+          ],
+        },
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects an invalid matcher regular expression", () => {
+      const result = unifiedConfigSchema.safeParse({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "(",
+              hooks: [{ type: "command", command: "policy-check" }],
+            },
+          ],
+        },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("rejects an empty hook command", () => {
+      const result = unifiedConfigSchema.safeParse({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: "Bash",
+              hooks: [{ type: "command", command: "" }],
+            },
+          ],
+        },
       });
       expect(result.success).toBe(false);
     });

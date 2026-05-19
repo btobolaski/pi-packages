@@ -192,14 +192,12 @@ function formatConfigIssues(error: ZodError): string[] {
 /**
  * Merge two unified configs.
  * - `permission` is deep-shallow merged (surface-level object maps are shallow-merged).
- * - Scalar fields (debugLog, permissionReviewLog, yoloMode) are replaced when
- *   present in the override.
- * - Array fields (piInfrastructureReadPaths) replace the base when present in
- *   the override (override-wins, same as scalars).
+ * - Scalar fields are replaced when present in the override.
+ * - Array fields replace the base when present in the override.
+ * - Hook matcher arrays use override-wins semantics.
  */
 // Scalar knobs merged by override-replaces-base; keep in sync with
-// PermissionSystemExtensionConfig booleans (debugLog, permissionReviewLog,
-// yoloMode, doublePressToConfirm).
+// PermissionSystemExtensionConfig booleans.
 export function mergeUnifiedConfigs(
   base: UnifiedPermissionConfig,
   override: UnifiedPermissionConfig,
@@ -211,6 +209,7 @@ export function mergeUnifiedConfigs(
     "debugLog",
     "permissionReviewLog",
     "yoloMode",
+    "allowLocalEdits",
     "doublePressToConfirm",
   ] as const) {
     const value = override[key] ?? base[key];
@@ -253,6 +252,12 @@ export function mergeUnifiedConfigs(
     merged.shellTools = baseShell;
   } else if (overrideShell) {
     merged.shellTools = overrideShell;
+  }
+
+  // Hooks: the higher-precedence scope replaces the complete hook set.
+  const hooks = override.hooks ?? base.hooks;
+  if (hooks !== undefined) {
+    merged.hooks = hooks;
   }
 
   // Permission: deep-shallow merge

@@ -502,14 +502,21 @@ describe("mergeUnifiedConfigs", () => {
         debugLog: true,
         permissionReviewLog: true,
         yoloMode: false,
+        allowLocalEdits: false,
         doublePressToConfirm: true,
       },
-      { debugLog: false, yoloMode: true, doublePressToConfirm: false },
+      {
+        debugLog: false,
+        yoloMode: true,
+        allowLocalEdits: true,
+        doublePressToConfirm: false,
+      },
     );
 
     expect(merged.debugLog).toBe(false);
     expect(merged.permissionReviewLog).toBe(true);
     expect(merged.yoloMode).toBe(true);
+    expect(merged.allowLocalEdits).toBe(true);
     expect(merged.doublePressToConfirm).toBe(false);
   });
 
@@ -655,6 +662,43 @@ describe("mergeUnifiedConfigs", () => {
       { debugLog: true },
     );
     expect(merged.authorizerChain).toEqual(["kept-judge"]);
+  });
+
+  it("override hooks replace the complete base hook set", () => {
+    const baseHook = {
+      PreToolUse: [
+        {
+          matcher: "Bash",
+          hooks: [{ type: "command" as const, command: "base-check" }],
+        },
+      ],
+    };
+    const overrideHook = {
+      PreToolUse: [
+        {
+          matcher: "Write",
+          hooks: [{ type: "command" as const, command: "override-check" }],
+        },
+      ],
+    };
+    const merged = mergeUnifiedConfigs(
+      { hooks: baseHook },
+      { hooks: overrideHook },
+    );
+    expect(merged.hooks).toEqual(overrideHook);
+  });
+
+  it("base hooks survive when override omits them", () => {
+    const baseHook = {
+      PreToolUse: [
+        {
+          matcher: "Bash",
+          hooks: [{ type: "command" as const, command: "base-check" }],
+        },
+      ],
+    };
+    const merged = mergeUnifiedConfigs({ hooks: baseHook }, {});
+    expect(merged.hooks).toEqual(baseHook);
   });
 
   it("base shellTools survives when override omits it", () => {

@@ -97,6 +97,7 @@ describe("normalizePermissionSystemConfig", () => {
       debugLog: true,
       permissionReviewLog: false,
       yoloMode: true,
+      allowLocalEdits: false,
       doublePressToConfirm: true,
     });
   });
@@ -114,6 +115,39 @@ describe("normalizePermissionSystemConfig", () => {
   it("defaults yoloMode to false when missing", () => {
     const result = normalizePermissionSystemConfig({});
     expect(result.yoloMode).toBe(false);
+  });
+
+  it("defaults allowLocalEdits to false when missing", () => {
+    const result = normalizePermissionSystemConfig({});
+    expect(result.allowLocalEdits).toBe(false);
+  });
+
+  it("enables the hook edit mode when allowLocalEdits is true", () => {
+    const result = normalizePermissionSystemConfig({ allowLocalEdits: true });
+    expect(result.allowLocalEdits).toBe(true);
+  });
+
+  it("normalizes configured PreToolUse hooks", () => {
+    const result = normalizePermissionSystemConfig({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: "Bash|Edit",
+            hooks: [{ type: "command", command: " policy-check " }],
+          },
+        ],
+      },
+    });
+    expect(result.hooks?.PreToolUse).toHaveLength(1);
+    expect(result.hooks?.PreToolUse?.[0]?.matcher).toBe("Bash|Edit");
+    expect(result.hooks?.PreToolUse?.[0]?.hooks[0]?.command).toBe(
+      "policy-check",
+    );
+  });
+
+  it("omits hooks when none are configured", () => {
+    const result = normalizePermissionSystemConfig({});
+    expect("hooks" in result).toBe(false);
   });
 
   it("defaults doublePressToConfirm to true when missing", () => {

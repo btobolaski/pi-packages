@@ -1,6 +1,8 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  realpathSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -192,14 +194,21 @@ export function saveExtensionConfig(
     allowedFetchDomains: normalized.allowedFetchDomains,
   };
 
-  const tmpPath = `${globalPath}.tmp`;
+  // If the config path is a symlink, write to (and rename onto) the link's
+  // real target so we preserve the user's symlink rather than replacing it
+  // with a regular file. Resolution lives inside the same try/catch as the
+  // write so any failure (including a dangling symlink) is surfaced via
+  // `ctx.ui.notify` rather than silently letting the symlink be overwritten.
+  let tmpPath: string | null = null;
   try {
-    mkdirSync(dirname(globalPath), { recursive: true });
+    const writeTarget = resolveSymlinkTarget(globalPath);
+    tmpPath = `${writeTarget}.tmp`;
+    mkdirSync(dirname(writeTarget), { recursive: true });
     writeFileSync(tmpPath, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
-    renameSync(tmpPath, globalPath);
+    renameSync(tmpPath, writeTarget);
   } catch (error) {
     try {
-      if (existsSync(tmpPath)) {
+      if (tmpPath && existsSync(tmpPath)) {
         unlinkSync(tmpPath);
       }
     } catch {
@@ -227,6 +236,30 @@ export function saveExtensionConfig(
   });
 
   return true;
+}
+
+/**
+ * Return `path` if it is not a symlink, or the resolved target if it is.
+ *
+ * Used by `saveExtensionConfig` so the atomic `writeFile`+`rename` happens
+ * against the real underlying file when the user has symlinked their config
+ * (e.g. into a dotfiles repo). Without this, `renameSync` would replace the
+ * symlink itself with a regular file.
+ *
+ * A missing path resolves to itself, so the first save can create a fresh
+ * regular file. A dangling-or-unreadable symlink, however, lets the
+ * underlying `realpathSync` error propagate — callers must handle it so the
+ * symlink is not silently overwritten.
+ */
+function resolveSymlinkTarget(path: string): string {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat) {
+    return path;
+  }
+  if (!stat.isSymbolicLink()) {
+    return path;
+  }
+  return realpathSync(path);
 }
 
 /**

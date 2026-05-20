@@ -1,19 +1,20 @@
 import {
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_EXTENSION_CONFIG } from "../src/extension-config";
-
-import type { ExtensionRuntime } from "../src/runtime";
-import { saveExtensionConfig } from "../src/runtime";
+import { DEFAULT_EXTENSION_CONFIG } from "#src/extension-config";
+import { type ExtensionRuntime, saveExtensionConfig } from "#src/runtime";
 
 /**
  * Build a minimal `ExtensionRuntime` that exercises the real on-disk save
@@ -118,6 +119,74 @@ describe("saveExtensionConfig", () => {
     expect(saved.yoloMode).toBe(true);
     expect(saved.allowLocalEdits).toBe(true);
     expect(saved.allowedFetchDomains).toEqual(["example.com"]);
+  });
+
+  it("writes through a symlinked config path instead of replacing the symlink", () => {
+    const targetDir = mkdtempSync(join(tmpdir(), "pi-perm-save-target-"));
+    try {
+      const realConfigPath = join(targetDir, "real-config.json");
+      writeFileSync(
+        realConfigPath,
+        `${JSON.stringify({ permission: { read: "allow" } }, null, 2)}\n`,
+      );
+      mkdirSync(extDir, { recursive: true });
+      symlinkSync(realConfigPath, globalConfigPath);
+
+      const runtime = makeRuntime(agentDir);
+      const result = saveExtensionConfig(
+        runtime,
+        { ...DEFAULT_EXTENSION_CONFIG, yoloMode: true },
+        makeCtx(),
+      );
+
+      expect(result).toBe(true);
+      expect(lstatSync(globalConfigPath).isSymbolicLink()).toBe(true);
+      expect(realpathSync(globalConfigPath)).toBe(realpathSync(realConfigPath));
+      expect(readJson(realConfigPath)).toEqual({
+        permission: { read: "allow" },
+        ...DEFAULT_EXTENSION_CONFIG,
+        yoloMode: true,
+      });
+      expect(
+        lstatSync(`${realConfigPath}.tmp`, { throwIfNoEntry: false }),
+      ).toBeUndefined();
+      expect(
+        lstatSync(`${globalConfigPath}.tmp`, { throwIfNoEntry: false }),
+      ).toBeUndefined();
+    } finally {
+      rmSync(targetDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to replace a dangling config symlink", () => {
+    const targetDir = mkdtempSync(join(tmpdir(), "pi-perm-save-dangling-"));
+    try {
+      const missingTarget = join(targetDir, "does-not-exist.json");
+      mkdirSync(extDir, { recursive: true });
+      symlinkSync(missingTarget, globalConfigPath);
+
+      const runtime = makeRuntime(agentDir);
+      const beforeConfig = { ...runtime.config };
+      const ctx = makeCtx();
+      const result = saveExtensionConfig(
+        runtime,
+        { ...DEFAULT_EXTENSION_CONFIG, yoloMode: true },
+        ctx,
+      );
+
+      expect(result).toBe(false);
+      expect(runtime.config).toEqual(beforeConfig);
+      expect(lstatSync(globalConfigPath).isSymbolicLink()).toBe(true);
+      expect(
+        lstatSync(missingTarget, { throwIfNoEntry: false }),
+      ).toBeUndefined();
+      expect(ctx.ui.notify).toHaveBeenCalledWith(
+        expect.stringContaining("Failed to save permission-system config"),
+        "error",
+      );
+    } finally {
+      rmSync(targetDir, { recursive: true, force: true });
+    }
   });
 
   it("returns false and leaves runtime.config unchanged when the write fails", () => {

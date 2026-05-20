@@ -1,6 +1,8 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  realpathSync,
   renameSync,
   unlinkSync,
   writeFileSync,
@@ -140,8 +142,7 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
    *
    * Equivalent to `saveExtensionConfig(runtime, next, ctx)`.
    */
-  // Called via the CommandConfigStore interface from config-modal.ts — fallow cannot trace through interfaces.
-  // fallow-ignore-next-line unused-class-member
+  // Called via the CommandConfigStore interface from config-modal.ts.
   save(
     next: PermissionSystemExtensionConfig,
     ctx: ExtensionCommandContext,
@@ -158,14 +159,16 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       allowLocalEdits: normalized.allowLocalEdits,
     };
 
-    const tmpPath = `${globalPath}.tmp`;
+    let tmpPath: string | null = null;
     try {
-      mkdirSync(dirname(globalPath), { recursive: true });
+      const writeTarget = resolveSymlinkTarget(globalPath);
+      tmpPath = `${writeTarget}.tmp`;
+      mkdirSync(dirname(writeTarget), { recursive: true });
       writeFileSync(tmpPath, `${JSON.stringify(merged, null, 2)}\n`, "utf-8");
-      renameSync(tmpPath, globalPath);
+      renameSync(tmpPath, writeTarget);
     } catch (error) {
       try {
-        if (existsSync(tmpPath)) {
+        if (tmpPath && existsSync(tmpPath)) {
           unlinkSync(tmpPath);
         }
       } catch {
@@ -225,4 +228,13 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       entry as unknown as Record<string, unknown>,
     );
   }
+}
+
+/** Resolve an existing config symlink without replacing it during atomic save. */
+function resolveSymlinkTarget(path: string): string {
+  const stat = lstatSync(path, { throwIfNoEntry: false });
+  if (!stat?.isSymbolicLink()) {
+    return path;
+  }
+  return realpathSync(path);
 }

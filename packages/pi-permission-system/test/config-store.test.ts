@@ -8,7 +8,9 @@ const {
   mockSyncPermissionSystemStatus,
   mockBuildResolvedConfigLogEntry,
   mockExistsSync,
+  mockLstatSync,
   mockMkdirSync,
+  mockRealpathSync,
   mockWriteFileSync,
   mockRenameSync,
   mockUnlinkSync,
@@ -18,7 +20,9 @@ const {
   mockSyncPermissionSystemStatus: vi.fn(),
   mockBuildResolvedConfigLogEntry: vi.fn(),
   mockExistsSync: vi.fn<(path: string) => boolean>(),
+  mockLstatSync: vi.fn(),
   mockMkdirSync: vi.fn(),
+  mockRealpathSync: vi.fn(),
   mockWriteFileSync: vi.fn(),
   mockRenameSync: vi.fn(),
   mockUnlinkSync: vi.fn(),
@@ -39,13 +43,17 @@ vi.mock("../src/config-reporter", () => ({
 
 vi.mock("node:fs", () => ({
   existsSync: mockExistsSync,
+  lstatSync: mockLstatSync,
   mkdirSync: mockMkdirSync,
+  realpathSync: mockRealpathSync,
   writeFileSync: mockWriteFileSync,
   renameSync: mockRenameSync,
   unlinkSync: mockUnlinkSync,
   default: {
     existsSync: mockExistsSync,
+    lstatSync: mockLstatSync,
     mkdirSync: mockMkdirSync,
+    realpathSync: mockRealpathSync,
     writeFileSync: mockWriteFileSync,
     renameSync: mockRenameSync,
     unlinkSync: mockUnlinkSync,
@@ -143,7 +151,9 @@ describe("ConfigStore", () => {
       .mockReset()
       .mockReturnValue({ resolved: true });
     mockExistsSync.mockReset().mockReturnValue(false);
+    mockLstatSync.mockReset().mockReturnValue(undefined);
     mockMkdirSync.mockReset();
+    mockRealpathSync.mockReset();
     mockWriteFileSync.mockReset();
     mockRenameSync.mockReset();
     mockUnlinkSync.mockReset();

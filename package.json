@@ -7,6 +7,11 @@
   "engines": {
     "node": ">=22"
   },
+  "pi": {
+    "extensions": [
+      "packages/pi-permission-system/src/index.ts"
+    ]
+  },
   "scripts": {
     "prepare": "command -v prek >/dev/null 2>&1 && prek install || echo 'prek not found \u2014 skipping hook install (see README)'",
     "check": "pnpm -r run check",

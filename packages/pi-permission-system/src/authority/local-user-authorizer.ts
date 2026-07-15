@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { InteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import type {
   PermissionPromptDecision,
   RequestPermissionOptions,
@@ -27,6 +28,8 @@ export interface LocalUserAuthorizerDeps {
   events: PermissionEventBus;
   /** Read live at prompt time so a settings-modal toggle takes effect on the next prompt. */
   getPromptPreferences: () => PromptPreferences;
+  /** Serializes complete human prompt transactions. */
+  promptQueue: InteractivePromptQueue;
   /** Injected for testability; production callers pass the real function. */
   requestPermissionDecision: typeof requestPermissionDecision;
 }
@@ -47,21 +50,24 @@ export class LocalUserAuthorizer implements TerminalAuthorizer {
   authorize(
     details: PromptPermissionDetails,
   ): Promise<PermissionPromptDecision> {
-    const uiPrompt = buildUiPrompt(details);
-    emitUiPromptEvent(this.deps.events, uiPrompt);
-    return this.deps.requestPermissionDecision(
-      {
-        mode: this.deps.mode,
-        ui: this.deps.ui,
-        doublePressToConfirm:
-          this.deps.getPromptPreferences().doublePressToConfirm,
-      },
-      details.forwarding
-        ? "Permission Required (Subagent)"
-        : "Permission Required",
-      details.message,
-      buildRequestOptions(details),
-    );
+    return this.deps.promptQueue.run((signal) => {
+      const uiPrompt = buildUiPrompt(details);
+      emitUiPromptEvent(this.deps.events, uiPrompt);
+      return this.deps.requestPermissionDecision(
+        {
+          mode: this.deps.mode,
+          ui: this.deps.ui,
+          doublePressToConfirm:
+            this.deps.getPromptPreferences().doublePressToConfirm,
+          signal,
+        },
+        details.forwarding
+          ? "Permission Required (Subagent)"
+          : "Permission Required",
+        details.message,
+        buildRequestOptions(details),
+      );
+    });
   }
 }
 

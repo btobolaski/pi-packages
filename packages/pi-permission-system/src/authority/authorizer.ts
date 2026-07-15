@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { InteractivePromptQueueController } from "#src/authority/interactive-prompt-queue";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import type {
   PromptPreferences,
@@ -89,6 +90,8 @@ export interface AuthorizerSelectionDeps {
   events: PermissionEventBus;
   /** Read live at prompt time; threaded into `LocalUserAuthorizer`. */
   getPromptPreferences: () => PromptPreferences;
+  /** Serializes human prompt transactions and cancels them on session teardown. */
+  promptQueue: InteractivePromptQueueController;
   /** Injected for testability; production callers pass the real function. */
   requestPermissionDecision: typeof requestPermissionDecision;
   /** Forwarding directory `ParentAuthorizer` reads/writes request and response files under. */
@@ -122,6 +125,7 @@ export function selectAuthorizer(
         mode: ctx.mode,
         events: deps.events,
         getPromptPreferences: deps.getPromptPreferences,
+        promptQueue: deps.promptQueue,
         requestPermissionDecision: deps.requestPermissionDecision,
       }),
       adjudicatesLocally: true,

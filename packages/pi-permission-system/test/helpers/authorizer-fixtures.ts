@@ -14,6 +14,7 @@ import type {
   AuthorizerSelectionDeps as SelectionCtorDeps,
 } from "#src/authority/authorizer";
 import { AuthorizerRegistry } from "#src/authority/authorizer-registry";
+import { SerialInteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import type { PermissionPrompterApi } from "#src/authority/permission-prompter";
 import { ServingSessionRegistry } from "#src/authority/serving-registry";
 import type { SubagentDetector } from "#src/authority/subagent-detection";
@@ -85,6 +86,7 @@ export function makeAuthorizerSelectionDeps(
     getPromptPreferences:
       overrides.getPromptPreferences ??
       (() => ({ doublePressToConfirm: true })),
+    promptQueue: overrides.promptQueue ?? new SerialInteractivePromptQueue(),
     requestPermissionDecision:
       overrides.requestPermissionDecision ??
       vi.fn().mockResolvedValue({ approved: true, state: "approved" }),

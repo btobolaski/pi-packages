@@ -9,6 +9,7 @@ import {
   type ServingPolicy,
 } from "./authority/forwarded-request-server";
 import { ForwardingManager } from "./authority/forwarding-manager";
+import { SerialInteractivePromptQueue } from "./authority/interactive-prompt-queue";
 import { PERMISSION_FORWARDING_TIMEOUT_MS } from "./authority/permission-forwarding";
 import { requestPermissionDecision } from "./authority/permission-prompt-component";
 import { PermissionPrompter } from "./authority/permission-prompter";
@@ -109,6 +110,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   });
 
   const prompter = new PermissionPrompter({ logger });
+  const promptQueue = new SerialInteractivePromptQueue();
 
   const authorizerSelection = new AuthorizerSelection({
     detection: subagentDetection,
@@ -116,6 +118,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     getPromptPreferences: () => ({
       doublePressToConfirm: configStore.current().doublePressToConfirm,
     }),
+    promptQueue,
     requestPermissionDecision,
     forwardingDir: paths.forwardingDir,
     registry: subagentRegistry,

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { SerialInteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import { LocalUserAuthorizer } from "#src/authority/local-user-authorizer";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import type { requestPermissionDecision } from "#src/authority/permission-prompt-component";
@@ -51,6 +52,7 @@ function makeDeps(
       mode: "tui" as const,
       events,
       getPromptPreferences: () => ({ doublePressToConfirm: true }),
+      promptQueue: new SerialInteractivePromptQueue(),
       requestPermissionDecision: decisionFn,
     },
     events,
@@ -115,7 +117,12 @@ describe("LocalUserAuthorizer", () => {
     await authorizer.authorize(makeDetails());
 
     expect(decisionFn).toHaveBeenCalledWith(
-      { mode: "tui", ui, doublePressToConfirm: true },
+      {
+        mode: "tui",
+        ui,
+        doublePressToConfirm: true,
+        signal: expect.any(AbortSignal),
+      },
       "Permission Required",
       "Allow read?",
       undefined,
@@ -156,6 +163,7 @@ describe("LocalUserAuthorizer", () => {
       mode: "tui",
       events,
       getPromptPreferences: () => ({ doublePressToConfirm: true }),
+      promptQueue: new SerialInteractivePromptQueue(),
       requestPermissionDecision: decisionFn,
     });
 
@@ -212,7 +220,12 @@ describe("LocalUserAuthorizer", () => {
       );
 
       expect(decisionFn).toHaveBeenCalledWith(
-        { mode: "tui", ui, doublePressToConfirm: true },
+        {
+          mode: "tui",
+          ui,
+          doublePressToConfirm: true,
+          signal: expect.any(AbortSignal),
+        },
         "Permission Required (Subagent)",
         "Allow read?",
         undefined,

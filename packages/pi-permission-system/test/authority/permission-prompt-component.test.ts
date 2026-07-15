@@ -136,6 +136,25 @@ describe("presentInlinePermissionPrompt", () => {
     }
   });
 
+  it("settles the active inline component when its session is cancelled", async () => {
+    const controller = new AbortController();
+    const { view } = makeFakeView(true);
+    view.signal = controller.signal;
+    const prompt = presentInlinePermissionPrompt(
+      view,
+      "Permission Required",
+      "Allow read?",
+    );
+
+    controller.abort();
+
+    await expect(prompt).resolves.toEqual({
+      approved: false,
+      state: "denied",
+      confirmationUnavailable: true,
+    });
+  });
+
   describe("double-press to confirm (enabled)", () => {
     it("resolves approved on y, y", async () => {
       expect(await runPrompt(true, ["y", "y"])).toEqual({

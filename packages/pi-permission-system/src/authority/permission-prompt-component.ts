@@ -47,6 +47,8 @@ export interface PermissionPromptView {
   mode: ExtensionContext["mode"];
   ui: PermissionPromptUi;
   doublePressToConfirm: boolean;
+  /** Cancels an active inline component when its permission session ends. */
+  signal?: AbortSignal;
 }
 
 /** Live prompt-behavior preferences read at prompt time (see `doublePressToConfirm`). */
@@ -101,8 +103,9 @@ export function presentInlinePermissionPrompt(
     sessionScope: options?.sessionScope,
   };
   return view.ui.custom<PermissionPromptDecision>(
-    (tui, theme, keybindings, done) =>
-      new PermissionPromptComponent(
+    (tui, theme, keybindings, done) => {
+      const finish = createPromptCompletion(done, view.signal);
+      return new PermissionPromptComponent(
         theme,
         config,
         title,
@@ -111,10 +114,40 @@ export function presentInlinePermissionPrompt(
         () => {
           tui.requestRender();
         },
-        done,
-      ),
+        finish,
+      );
+    },
     { overlay: false },
   );
+}
+
+const CANCELLED_PROMPT_DECISION: PermissionPromptDecision = {
+  approved: false,
+  state: "denied",
+  confirmationUnavailable: true,
+};
+
+function createPromptCompletion(
+  done: (decision: PermissionPromptDecision) => void,
+  signal: AbortSignal | undefined,
+): (decision: PermissionPromptDecision) => void {
+  let settled = false;
+  const finish = (decision: PermissionPromptDecision): void => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    signal?.removeEventListener("abort", abort);
+    done(decision);
+  };
+  const abort = (): void => {
+    finish(CANCELLED_PROMPT_DECISION);
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) {
+    abort();
+  }
+  return finish;
 }
 
 /**

@@ -147,9 +147,10 @@ export class AuthorizerSelection
     return links;
   }
 
-  /** Clear the stored selection. */
+  /** Clear the stored selection and cancel active or queued human prompts. */
   deactivate(): void {
     this.authority = null;
+    this.deps.promptQueue.invalidate("The permission session changed.");
   }
 
   /**

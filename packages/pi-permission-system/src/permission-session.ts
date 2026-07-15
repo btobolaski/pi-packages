@@ -98,12 +98,14 @@ export class PermissionSession implements ToolCallGateInputs {
   /**
    * Reset all mutable state for a new session.
    *
-   * Configures the injected PermissionManager for `ctx.cwd` (or global-only
+   * Deactivates the old authorizer selection to cancel its prompt work,
+   * configures the injected PermissionManager for `ctx.cwd` (or global-only
    * when `projectTrusted` is `false`, withholding the project cwd so an
    * untrusted project's policy scopes are not loaded, #644), clears skill
    * entries, and activates the new context.
    */
   resetForNewSession(ctx: ExtensionContext, projectTrusted: boolean): void {
+    this.authorizerSelection.deactivate();
     this.permissionManager.configureForCwd(
       projectTrusted ? ctx.cwd : undefined,
     );

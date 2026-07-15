@@ -13,6 +13,7 @@ import {
   ServingHeartbeatStore,
 } from "./authority/forwarding-liveness";
 import { ForwardingManager } from "./authority/forwarding-manager";
+import { SerialInteractivePromptQueue } from "./authority/interactive-prompt-queue";
 import { PERMISSION_FORWARDING_TIMEOUT_MS } from "./authority/permission-forwarding";
 import { requestPermissionDecision } from "./authority/permission-prompt-component";
 import { PermissionPrompter } from "./authority/permission-prompter";
@@ -117,6 +118,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   });
 
   const prompter = new PermissionPrompter({ logger });
+  const promptQueue = new SerialInteractivePromptQueue();
 
   // The filesystem half of the serving announcement. `servingRegistry` reaches
   // an in-process child through `globalThis`; a child in its own process shares
@@ -139,6 +141,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       doublePressToConfirm: configStore.current().doublePressToConfirm,
       budget: resolveRenderBudget(configStore.current()),
     }),
+    promptQueue,
     requestPermissionDecision,
     forwardingDir: paths.forwardingDir,
     registry: subagentRegistry,

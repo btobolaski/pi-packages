@@ -12,6 +12,7 @@ import { ParentAuthorizer } from "#src/authority/approval-escalator";
 import type { Authorizer } from "#src/authority/authorizer";
 import { AuthorizerRegistry } from "#src/authority/authorizer-registry";
 import { AuthorizerSelection } from "#src/authority/authorizer-selection";
+import { SerialInteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import { LocalUserAuthorizer } from "#src/authority/local-user-authorizer";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import type { PromptPermissionDetails } from "#src/authority/permission-prompter";
@@ -128,6 +129,30 @@ describe("AuthorizerSelection", () => {
   });
 
   describe("lifecycle", () => {
+    it("invalidates active and queued prompts on deactivate", () => {
+      const promptQueue = new SerialInteractivePromptQueue();
+      const invalidate = vi.spyOn(promptQueue, "invalidate");
+      const selection = new AuthorizerSelection(makeDeps({ promptQueue }));
+      selection.activate(makeCtx());
+
+      selection.deactivate();
+
+      expect(invalidate).toHaveBeenCalledWith(
+        "The permission session changed.",
+      );
+    });
+
+    it("does not invalidate active or queued prompts on reactivation", () => {
+      const promptQueue = new SerialInteractivePromptQueue();
+      const invalidate = vi.spyOn(promptQueue, "invalidate");
+      const selection = new AuthorizerSelection(makeDeps({ promptQueue }));
+      selection.activate(makeCtx({ cwd: "/old" }));
+
+      selection.activate(makeCtx({ cwd: "/new" }));
+
+      expect(invalidate).not.toHaveBeenCalled();
+    });
+
     it("activate then deactivate rejects a subsequent escalate", async () => {
       const selection = new AuthorizerSelection(makeDeps());
       selection.activate(makeCtx());

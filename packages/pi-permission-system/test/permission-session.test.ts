@@ -115,6 +115,17 @@ describe("PermissionSession", () => {
       expect(pm.configureForCwd).toHaveBeenCalledWith(undefined);
     });
 
+    it("deactivates the old selection before activating the new context", () => {
+      const { session, authorizerSelection } = createSession();
+      const ctx = makeCtx();
+
+      session.resetForNewSession(ctx, true);
+
+      expect(vi.mocked(authorizerSelection.deactivate)).toHaveBeenCalledBefore(
+        vi.mocked(authorizerSelection.activate),
+      );
+    });
+
     it("clears skill entries", () => {
       const { session } = createSession();
       session.setActiveSkillEntries([makeSkillEntry("test")]);

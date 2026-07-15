@@ -15,6 +15,7 @@ import type {
 } from "#src/authority/authorizer";
 import { AuthorizerRegistry } from "#src/authority/authorizer-registry";
 import { ForwardingLivenessJudge } from "#src/authority/forwarding-liveness";
+import { SerialInteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import type { PermissionPrompterApi } from "#src/authority/permission-prompter";
 import { ServingSessionRegistry } from "#src/authority/serving-registry";
 import type { SubagentDetector } from "#src/authority/subagent-detection";
@@ -89,6 +90,7 @@ export function makeAuthorizerSelectionDeps(
     },
     getPromptPreferences:
       overrides.getPromptPreferences ?? (() => makePromptPreferences()),
+    promptQueue: overrides.promptQueue ?? new SerialInteractivePromptQueue(),
     requestPermissionDecision:
       overrides.requestPermissionDecision ??
       vi.fn().mockResolvedValue({

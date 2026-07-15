@@ -69,7 +69,8 @@ export class AuthorizerSelection
   ) {}
 
   /**
-   * Select the live authority for `ctx` and store it. The non-terminal
+   * Select the live authority for `ctx` and store it. Reselection refreshes the
+   * authority without cancelling same-session prompt work. The non-terminal
    * chain is composed per ask in {@link escalate}, not here: ADR 0007 §4 lets a
    * link register in a `permissions:ready` handler that may fire after
    * activation, so link resolution is deferred to the session's first ask.
@@ -147,9 +148,10 @@ export class AuthorizerSelection
     return links;
   }
 
-  /** Clear the stored selection. */
+  /** Clear the stored selection and cancel active or queued human prompts. */
   deactivate(): void {
     this.authority = null;
+    this.deps.promptQueue.invalidate("The permission session changed.");
   }
 
   /**

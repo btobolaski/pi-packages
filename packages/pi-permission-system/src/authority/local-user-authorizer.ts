@@ -1,3 +1,4 @@
+import type { InteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import type {
   PermissionDecisionUi,
   PermissionPromptDecision,
@@ -19,6 +20,8 @@ export interface LocalUserAuthorizerDeps {
   ui: PermissionDecisionUi;
   /** Event bus used for the `permissions:ui_prompt` broadcast. */
   events: PermissionEventBus;
+  /** Serializes complete local UI interactions. */
+  queue: InteractivePromptQueue;
   /** Injected for testability; production callers pass the real function. */
   requestPermissionDecisionFromUi: typeof requestPermissionDecisionFromUi;
 }
@@ -39,16 +42,19 @@ export class LocalUserAuthorizer implements Authorizer {
   authorize(
     details: PromptPermissionDetails,
   ): Promise<PermissionPromptDecision> {
-    const uiPrompt = buildUiPrompt(details);
-    emitUiPromptEvent(this.deps.events, uiPrompt);
-    return this.deps.requestPermissionDecisionFromUi(
-      this.deps.ui,
-      details.forwarding
-        ? "Permission Required (Subagent)"
-        : "Permission Required",
-      details.message,
-      buildRequestOptions(details),
-    );
+    return this.deps.queue.run((signal) => {
+      const uiPrompt = buildUiPrompt(details);
+      emitUiPromptEvent(this.deps.events, uiPrompt);
+      return this.deps.requestPermissionDecisionFromUi(
+        this.deps.ui,
+        details.forwarding
+          ? "Permission Required (Subagent)"
+          : "Permission Required",
+        details.message,
+        buildRequestOptions(details),
+        signal,
+      );
+    });
   }
 }
 

@@ -36,12 +36,14 @@ function makeSetup(opts?: { configIssues?: string[] }) {
   // not reach-through to session.logger.
   const logger = makeLogger();
   const audit = { writeSummary: vi.fn<(logger: unknown) => void>() };
+  const interactivePrompts = { invalidate: vi.fn<(reason: string) => void>() };
   const handler = new SessionLifecycleHandler(
     session,
     resolver,
     serviceLifecycle,
     logger,
     audit,
+    interactivePrompts,
   );
   return {
     handler,
@@ -53,12 +55,23 @@ function makeSetup(opts?: { configIssues?: string[] }) {
     configStore,
     serviceLifecycle,
     audit,
+    interactivePrompts,
   };
 }
 
 // ── handleSessionStart ─────────────────────────────────────────────────────
 
 describe("handleSessionStart", () => {
+  it("invalidates interactions from the previous session", async () => {
+    const { handler, interactivePrompts } = makeSetup();
+
+    await handler.handleSessionStart({ reason: "startup" }, makeCtx());
+
+    expect(interactivePrompts.invalidate).toHaveBeenCalledWith(
+      "Permission interaction cancelled because the session changed.",
+    );
+  });
+
   it("refreshes config with ctx", async () => {
     const ctx = makeCtx();
     const { handler, configStore } = makeSetup();
@@ -127,9 +140,12 @@ describe("handleSessionStart", () => {
     expect(serviceLifecycle.activate).toHaveBeenCalledWith(ctx);
   });
 
-  it("calls refreshConfig before resetForNewSession", async () => {
+  it("invalidates interactions before refreshing and resetting the session", async () => {
     const callOrder: string[] = [];
-    const { handler, session, configStore } = makeSetup();
+    const { handler, session, configStore, interactivePrompts } = makeSetup();
+    interactivePrompts.invalidate.mockImplementation(() => {
+      callOrder.push("invalidate");
+    });
     vi.spyOn(configStore, "refresh").mockImplementation(() => {
       callOrder.push("refreshConfig");
     });
@@ -137,7 +153,11 @@ describe("handleSessionStart", () => {
       callOrder.push("resetForNewSession");
     });
     await handler.handleSessionStart({ reason: "startup" }, makeCtx());
-    expect(callOrder).toEqual(["refreshConfig", "resetForNewSession"]);
+    expect(callOrder).toEqual([
+      "invalidate",
+      "refreshConfig",
+      "resetForNewSession",
+    ]);
   });
 });
 
@@ -184,6 +204,16 @@ describe("handleResourcesDiscover", () => {
 // ── handleSessionShutdown ──────────────────────────────────────────────────
 
 describe("handleSessionShutdown", () => {
+  it("invalidates interactions from the ending session", async () => {
+    const { handler, interactivePrompts } = makeSetup();
+
+    await handler.handleSessionShutdown();
+
+    expect(interactivePrompts.invalidate).toHaveBeenCalledWith(
+      "Permission interaction cancelled because the session ended.",
+    );
+  });
+
   it("clears UI status when runtime context is present", async () => {
     const ctx = makeCtx();
     const { handler, session } = makeSetup();

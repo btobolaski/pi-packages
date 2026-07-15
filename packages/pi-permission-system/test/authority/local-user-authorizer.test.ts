@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { SerialInteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import { LocalUserAuthorizer } from "#src/authority/local-user-authorizer";
 import type {
   PermissionPromptDecision,
@@ -37,7 +38,12 @@ function makeDeps(
       .fn<typeof requestPermissionDecisionFromUi>()
       .mockResolvedValue({ approved: true, state: "approved" });
   return {
-    deps: { ui, events, requestPermissionDecisionFromUi: decisionFn },
+    deps: {
+      ui,
+      events,
+      queue: new SerialInteractivePromptQueue(),
+      requestPermissionDecisionFromUi: decisionFn,
+    },
     events,
     ui,
     decisionFn,
@@ -104,6 +110,7 @@ describe("LocalUserAuthorizer", () => {
       "Permission Required",
       "Allow read?",
       undefined,
+      expect.any(AbortSignal),
     );
   });
 
@@ -120,6 +127,7 @@ describe("LocalUserAuthorizer", () => {
       expect.any(String),
       expect.any(String),
       { sessionLabel: "Yes, for 'read' tool" },
+      expect.any(AbortSignal),
     );
   });
 
@@ -139,6 +147,7 @@ describe("LocalUserAuthorizer", () => {
     const authorizer = new LocalUserAuthorizer({
       ui,
       events,
+      queue: new SerialInteractivePromptQueue(),
       requestPermissionDecisionFromUi: decisionFn,
     });
 
@@ -148,6 +157,63 @@ describe("LocalUserAuthorizer", () => {
   });
 
   describe("forwarded provenance", () => {
+    it("serializes concurrent direct and forwarded authorization", async () => {
+      const directDecision = Promise.withResolvers<PermissionPromptDecision>();
+      const forwardedDecision =
+        Promise.withResolvers<PermissionPromptDecision>();
+      const { deps, events, decisionFn } = makeDeps({
+        requestPermissionDecisionFromUi: vi
+          .fn<typeof requestPermissionDecisionFromUi>()
+          .mockImplementationOnce(() => directDecision.promise)
+          .mockImplementationOnce(() => forwardedDecision.promise),
+      });
+      const authorizer = new LocalUserAuthorizer(deps);
+
+      const directResult = authorizer.authorize(
+        makeDetails({ requestId: "direct" }),
+      );
+      const forwardedResult = authorizer.authorize(
+        makeDetails({
+          requestId: "forwarded",
+          forwarding: {
+            requesterAgentName: "Explore",
+            requesterSessionId: "child-session",
+          },
+        }),
+      );
+      await Promise.resolve();
+
+      expect(events.emit).toHaveBeenCalledOnce();
+      expect(decisionFn).toHaveBeenCalledOnce();
+      expect(decisionFn).toHaveBeenLastCalledWith(
+        expect.anything(),
+        "Permission Required",
+        "Allow read?",
+        undefined,
+        expect.any(AbortSignal),
+      );
+
+      directDecision.resolve({ approved: true, state: "approved" });
+      await directResult;
+      await Promise.resolve();
+
+      expect(events.emit).toHaveBeenCalledTimes(2);
+      expect(decisionFn).toHaveBeenCalledTimes(2);
+      expect(decisionFn).toHaveBeenLastCalledWith(
+        expect.anything(),
+        "Permission Required (Subagent)",
+        "Allow read?",
+        undefined,
+        expect.any(AbortSignal),
+      );
+
+      forwardedDecision.resolve({ approved: false, state: "denied" });
+      await expect(forwardedResult).resolves.toEqual({
+        approved: false,
+        state: "denied",
+      });
+    });
+
     it("emits a non-degraded forwarded event with populated forwarding and the child's display projection", async () => {
       const { deps, events } = makeDeps();
       const authorizer = new LocalUserAuthorizer(deps);
@@ -199,6 +265,7 @@ describe("LocalUserAuthorizer", () => {
         "Permission Required (Subagent)",
         "Allow read?",
         undefined,
+        expect.any(AbortSignal),
       );
     });
 
@@ -229,6 +296,7 @@ describe("LocalUserAuthorizer", () => {
               'The whole session — allow bash "git *" for parent and all subagents',
           },
         },
+        expect.any(AbortSignal),
       );
     });
 
@@ -250,6 +318,7 @@ describe("LocalUserAuthorizer", () => {
         expect.any(String),
         expect.any(String),
         undefined,
+        expect.any(AbortSignal),
       );
     });
   });

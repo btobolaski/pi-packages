@@ -12,6 +12,7 @@ import { vi } from "vitest";
 
 import type { ResolvedAccessIntent } from "#src/access-intent/access-intent";
 import type { AskEscalator } from "#src/authority/authorizer-selection";
+import { SerialInteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import { WebAccessPrompter } from "#src/authority/web-access-prompter";
 import { GateDecisionReporter } from "#src/decision-reporter";
 import { GateRunner } from "#src/handlers/gates/runner";
@@ -296,7 +297,11 @@ export function makeHandler(overrides?: {
 
   const recorder = new SessionRules();
   const reporter = new GateDecisionReporter(logger, events);
-  const webAccessPrompter = new WebAccessPrompter(logger, events);
+  const webAccessPrompter = new WebAccessPrompter(
+    logger,
+    events,
+    new SerialInteractivePromptQueue(),
+  );
   const toolCallOverrides = new ToolCallOverrides(
     session,
     webAccessPrompter,

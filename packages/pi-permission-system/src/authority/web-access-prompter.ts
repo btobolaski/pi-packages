@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { InteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import {
   requestWebAccessPermissionFromUi,
   type WebAccessPermissionDecision,
@@ -15,6 +16,7 @@ export class WebAccessPrompter {
   constructor(
     private readonly logger: ReviewLogger,
     private readonly events: PermissionEventBus,
+    private readonly queue: InteractivePromptQueue,
   ) {}
 
   async prompt(
@@ -23,32 +25,35 @@ export class WebAccessPrompter {
     domain: string,
   ): Promise<WebAccessPermissionDecision> {
     this.writeReviewEntry("permission_request.waiting", details);
-    emitUiPromptEvent(this.events, {
-      requestId: details.requestId,
-      source: details.source,
-      surface: details.toolName ?? "fetch_content",
-      value: domain,
-      agentName: details.agentName,
-      message: details.message,
-      forwarding: null,
+    return this.queue.run(async (signal) => {
+      emitUiPromptEvent(this.events, {
+        requestId: details.requestId,
+        source: details.source,
+        surface: details.toolName ?? "fetch_content",
+        value: domain,
+        agentName: details.agentName,
+        message: details.message,
+        forwarding: null,
+      });
+
+      const decision = await requestWebAccessPermissionFromUi(
+        ctx.ui,
+        "Permission request",
+        details.message,
+        domain,
+        signal,
+      );
+
+      this.writeReviewEntry(
+        decision.approved
+          ? "permission_request.approved"
+          : "permission_request.denied",
+        details,
+        decision.state,
+        decision.denialReason,
+      );
+      return decision;
     });
-
-    const decision = await requestWebAccessPermissionFromUi(
-      ctx.ui,
-      "Permission request",
-      details.message,
-      domain,
-    );
-
-    this.writeReviewEntry(
-      decision.approved
-        ? "permission_request.approved"
-        : "permission_request.denied",
-      details,
-      decision.state,
-      decision.denialReason,
-    );
-    return decision;
   }
 
   private writeReviewEntry(

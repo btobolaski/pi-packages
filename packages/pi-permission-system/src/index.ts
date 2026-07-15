@@ -7,6 +7,7 @@ import {
   type ServingPolicy,
 } from "./authority/forwarded-request-server";
 import { ForwardingManager } from "./authority/forwarding-manager";
+import { SerialInteractivePromptQueue } from "./authority/interactive-prompt-queue";
 import { requestPermissionDecisionFromUi } from "./authority/permission-dialog";
 import { PermissionPrompter } from "./authority/permission-prompter";
 import { SubagentDetection } from "./authority/subagent-detection";
@@ -98,10 +99,12 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   });
 
   const prompter = new PermissionPrompter({ logger });
+  const interactivePromptQueue = new SerialInteractivePromptQueue();
 
   const authorizerSelection = new AuthorizerSelection({
     detection: subagentDetection,
     events: pi.events,
+    queue: interactivePromptQueue,
     requestPermissionDecisionFromUi,
     forwardingDir: paths.forwardingDir,
     registry: subagentRegistry,
@@ -209,6 +212,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     serviceLifecycle,
     logger,
     audit,
+    interactivePromptQueue,
   );
   const agentPrep = new AgentPrepHandler(
     session,
@@ -220,7 +224,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   );
 
   const reporter = new GateDecisionReporter(logger, pi.events);
-  const webAccessPrompter = new WebAccessPrompter(logger, pi.events);
+  const webAccessPrompter = new WebAccessPrompter(
+    logger,
+    pi.events,
+    interactivePromptQueue,
+  );
   const toolOverrideSession = {
     get config() {
       return session.config;

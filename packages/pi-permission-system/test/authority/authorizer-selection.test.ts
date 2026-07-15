@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { AuthorizerSelectionDeps as SelectionCtorDeps } from "#src/authority/authorizer";
 import { AuthorizerSelection } from "#src/authority/authorizer-selection";
+import { SerialInteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import { LocalUserAuthorizer } from "#src/authority/local-user-authorizer";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import type {
@@ -72,6 +73,7 @@ function makeDeps(overrides: Partial<SelectionDeps> = {}): SelectionDeps {
       emit: vi.fn(),
       on: vi.fn().mockReturnValue(() => undefined),
     },
+    queue: overrides.queue ?? new SerialInteractivePromptQueue(),
     requestPermissionDecisionFromUi:
       overrides.requestPermissionDecisionFromUi ??
       vi.fn().mockResolvedValue({ approved: true, state: "approved" }),

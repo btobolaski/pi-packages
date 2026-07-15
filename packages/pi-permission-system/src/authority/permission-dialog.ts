@@ -101,6 +101,7 @@ export async function requestWebAccessPermissionFromUi(
   title: string,
   message: string,
   domain: string,
+  signal?: AbortSignal,
 ): Promise<WebAccessPermissionDecision> {
   const persistOption = `Yes, always allow ${domain}`;
   const sessionOption = `Yes, allow ${domain} for this session`;
@@ -112,7 +113,9 @@ export async function requestWebAccessPermissionFromUi(
     DENY_WITH_REASON_OPTION,
   ];
 
-  const selected = await ui.select(`${title}\n${message}`, decisionOptions);
+  const selected = await runUiOperation(signal, () =>
+    ui.select(`${title}\n${message}`, decisionOptions),
+  );
 
   if (selected === APPROVE_OPTION) {
     return { approved: true, state: "approved", domain };
@@ -135,9 +138,11 @@ export async function requestWebAccessPermissionFromUi(
   }
   if (selected === DENY_WITH_REASON_OPTION) {
     const denialReason = normalizePermissionDenialReason(
-      await ui.input(
-        `${title}\nShare why this request was denied (optional).`,
-        "Reason shown back to the agent",
+      await runUiOperation(signal, () =>
+        ui.input(
+          `${title}\nShare why this request was denied (optional).`,
+          "Reason shown back to the agent",
+        ),
       ),
     );
     return { ...createDeniedPermissionDecision(denialReason), domain };
@@ -150,6 +155,7 @@ export async function requestPermissionDecisionFromUi(
   title: string,
   message: string,
   options?: RequestPermissionOptions,
+  signal?: AbortSignal,
 ): Promise<PermissionPromptDecision> {
   const sessionOption = options?.sessionLabel ?? APPROVE_FOR_SESSION_OPTION;
   const decisionOptions = [
@@ -159,9 +165,9 @@ export async function requestPermissionDecisionFromUi(
     DENY_WITH_REASON_OPTION,
   ] as const;
 
-  const selected = await ui.select(`${title}\n${message}`, [
-    ...decisionOptions,
-  ]);
+  const selected = await runUiOperation(signal, () =>
+    ui.select(`${title}\n${message}`, [...decisionOptions]),
+  );
 
   if (selected === APPROVE_OPTION) {
     return {
@@ -172,16 +178,19 @@ export async function requestPermissionDecisionFromUi(
 
   if (selected === sessionOption) {
     if (options?.sessionScope) {
-      const scope = await ui.select(`${title}\nApply this session grant to:`, [
-        options.sessionScope.subagentLabel,
-        options.sessionScope.servingSessionLabel,
-      ]);
+      const { sessionScope } = options;
+      const scope = await runUiOperation(signal, () =>
+        ui.select(`${title}\nApply this session grant to:`, [
+          sessionScope.subagentLabel,
+          sessionScope.servingSessionLabel,
+        ]),
+      );
       return {
         approved: true,
         // A cancelled scope select (undefined) falls back to the
         // least-privilege subagent scope.
         state:
-          scope === options.sessionScope.servingSessionLabel
+          scope === sessionScope.servingSessionLabel
             ? "approved_for_serving_session"
             : "approved_for_session",
       };
@@ -194,9 +203,11 @@ export async function requestPermissionDecisionFromUi(
 
   if (selected === DENY_WITH_REASON_OPTION) {
     const denialReason = normalizePermissionDenialReason(
-      await ui.input(
-        `${title}\nShare why this request was denied (optional).`,
-        "Reason shown back to the agent",
+      await runUiOperation(signal, () =>
+        ui.input(
+          `${title}\nShare why this request was denied (optional).`,
+          "Reason shown back to the agent",
+        ),
       ),
     );
 
@@ -204,4 +215,51 @@ export async function requestPermissionDecisionFromUi(
   }
 
   return createDeniedPermissionDecision();
+}
+
+function runUiOperation<T>(
+  signal: AbortSignal | undefined,
+  operation: () => Promise<T>,
+): Promise<T> {
+  if (!signal) {
+    return operation();
+  }
+  if (signal.aborted) {
+    return Promise.reject(abortReason(signal));
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      reject(abortReason(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+
+    let result: Promise<T>;
+    try {
+      result = operation();
+    } catch (error) {
+      signal.removeEventListener("abort", onAbort);
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- preserve the UI implementation's original throw
+      reject(error);
+      return;
+    }
+
+    result.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- preserve the UI implementation's original rejection
+        reject(error);
+      },
+    );
+  });
+}
+
+function abortReason(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("Permission interaction cancelled.");
 }

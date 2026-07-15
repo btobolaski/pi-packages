@@ -199,6 +199,27 @@ describe("requestPermissionDecisionFromUi", () => {
       expect(scopeOptions).toEqual(["This subagent only", "The whole session"]);
     });
 
+    it("does not open a stale scope selector after cancellation", async () => {
+      const selection = Promise.withResolvers<string | undefined>();
+      const select = vi.fn().mockReturnValue(selection.promise);
+      const ui: PermissionDecisionUi = { select, input: vi.fn() };
+      const controller = new AbortController();
+
+      const result = requestPermissionDecisionFromUi(
+        ui,
+        "Title",
+        "Message",
+        { sessionScope },
+        controller.signal,
+      );
+      controller.abort(new Error("session changed"));
+
+      await expect(result).rejects.toThrow("session changed");
+      selection.resolve("Yes, for this session");
+      await Promise.resolve();
+      expect(select).toHaveBeenCalledOnce();
+    });
+
     it("maps the subagent scope to approved_for_session", async () => {
       const ui: PermissionDecisionUi = {
         select: vi
@@ -269,6 +290,30 @@ describe("requestPermissionDecisionFromUi", () => {
 });
 
 describe("requestWebAccessPermissionFromUi", () => {
+  it("does not open a stale denial input after cancellation", async () => {
+    const selection = Promise.withResolvers<string | undefined>();
+    const input = vi.fn().mockResolvedValue("reason");
+    const ui: PermissionDecisionUi = {
+      select: vi.fn().mockReturnValue(selection.promise),
+      input,
+    };
+    const controller = new AbortController();
+
+    const result = requestWebAccessPermissionFromUi(
+      ui,
+      "Title",
+      "Message",
+      "example.com",
+      controller.signal,
+    );
+    controller.abort(new Error("session changed"));
+
+    await expect(result).rejects.toThrow("session changed");
+    selection.resolve("No, provide reason");
+    await Promise.resolve();
+    expect(input).not.toHaveBeenCalled();
+  });
+
   it("offers one-off, persistent, session, and denial choices", async () => {
     const select = vi.fn().mockResolvedValue("Yes");
     const ui: PermissionDecisionUi = { select, input: vi.fn() };

@@ -6,6 +6,7 @@ import {
   selectAuthorizer,
 } from "#src/authority/authorizer";
 import { DenyingAuthorizer } from "#src/authority/denying-authorizer";
+import { SerialInteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import { LocalUserAuthorizer } from "#src/authority/local-user-authorizer";
 import type { SubagentDetector } from "#src/authority/subagent-detection";
 
@@ -36,6 +37,7 @@ function makeDeps(
       emit: vi.fn(),
       on: vi.fn().mockReturnValue(() => undefined),
     },
+    queue: overrides.queue ?? new SerialInteractivePromptQueue(),
     requestPermissionDecisionFromUi:
       overrides.requestPermissionDecisionFromUi ??
       vi.fn().mockResolvedValue({ approved: true, state: "approved" }),

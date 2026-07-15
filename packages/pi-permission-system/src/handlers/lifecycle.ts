@@ -1,5 +1,6 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+import type { InteractivePromptQueueLifecycle } from "#src/authority/interactive-prompt-queue";
 import type { DecisionSummaryWriter } from "#src/decision-audit";
 import type { PermissionResolver } from "#src/permission-resolver";
 import type { PermissionSession } from "#src/permission-session";
@@ -28,6 +29,7 @@ interface ResourcesDiscoverPayload {
  *   the ready event; `teardown` unsubscribes all session listeners and unpublishes
  * - `logger` — injected directly; replaces the former `session.logger` reach-through
  * - `audit` — per-session decision counters; its summary is written on shutdown
+ * - `interactivePrompts` — invalidates stale UI interactions at session boundaries
  */
 export class SessionLifecycleHandler {
   constructor(
@@ -36,12 +38,16 @@ export class SessionLifecycleHandler {
     private readonly serviceLifecycle: ServiceLifecycle,
     private readonly logger: SessionLogger,
     private readonly audit: DecisionSummaryWriter,
+    private readonly interactivePrompts: InteractivePromptQueueLifecycle,
   ) {}
 
   handleSessionStart(
     event: SessionStartPayload,
     ctx: ExtensionContext,
   ): Promise<void> {
+    this.interactivePrompts.invalidate(
+      "Permission interaction cancelled because the session changed.",
+    );
     this.session.refreshConfig(ctx);
     this.session.resetForNewSession(ctx);
     this.session.logResolvedConfigPaths();
@@ -83,6 +89,9 @@ export class SessionLifecycleHandler {
   }
 
   handleSessionShutdown(): Promise<void> {
+    this.interactivePrompts.invalidate(
+      "Permission interaction cancelled because the session ended.",
+    );
     const ctx = this.session.getRuntimeContext();
     if (ctx) {
       ctx.ui.setStatus(PERMISSION_SYSTEM_STATUS_KEY, undefined);

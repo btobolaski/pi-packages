@@ -328,6 +328,8 @@ Exit `2` is a denial; other execution failures and timeouts defer to the existin
 `PermissionSession` owns the session-scoped fetch-domain set and clears it on reset, reload, and shutdown.
 `ConfigStore` persists permanent domain approvals through the same atomic global-config save path used by the settings modal.
 `WebAccessPrompter` owns the local-only domain dialog, its UI-prompt broadcast, and the waiting/outcome review-log bracket.
+It shares the factory-scoped `SerialInteractivePromptQueue` with `LocalUserAuthorizer`, so domain dialogs and standard or parent-served forwarded dialogs run as complete, non-overlapping FIFO transactions.
+Session start and shutdown invalidate the current queue generation, fail active and queued requests closed, and allow the next session to proceed without an abandoned interaction.
 
 ## Session approvals: the cache-miss model
 
@@ -571,9 +573,9 @@ The "for this session" dialog option writes a session rule; a future "always" wr
 
 ### The `Authorizer` role
 
-On `ask`, the gate escalates to **one `Authorizer`, selected once per session from context**, and is told the decision.
+On `ask`, the gate escalates to **one `Authorizer`, selected once per activation from context**, and is told the decision.
 
-1. **`LocalUserAuthorizer`** — the session has UI; prompt the human here.
+1. **`LocalUserAuthorizer`** — the session has UI; prompt the human here through the factory's shared FIFO interaction queue.
 2. **`ParentAuthorizer`** — the session is a subagent; escalate up the tree to the parent's authority.
 3. **`DenyingAuthorizer`** — no authority is reachable; deny (least privilege).
 
@@ -792,7 +794,7 @@ src/
 │       └── program.ts         Born-ready `BashProgram` value object: `parse(command, normalizer: PathNormalizer, isPromotablePathToken?: PathRuleTokenMatcher)` eagerly resolves all three slices at construction time, forwarding the optional promotion predicate to `BashPathResolver` (default: promotes nothing, #509); parameter-free getters `commands(): BashCommand[]`, `externalPaths(): AccessPath[]`, `pathRuleCandidates(): BashPathRuleCandidate[]`; `commands()` splits the chain AND descends into command/process substitutions and subshells, emitting each nested command tagged with its execution `context` (never-weaker, #306), strips any leading `variable_assignment` prefix from each unit, and tags wrapper units with a `wrapperKind` (`bash -c`/`eval` #481; sudo/env/xargs/find -exec/… #490) so their decision is floored to `ask`; `externalPaths()` and `pathRuleCandidates()` delegate to a `BashPathResolver` built from the injected `PathNormalizer` (born-ready, #475; normalizer seam, #510); the `ToolCallContext.cwd: string | undefined` widening was corrected to `string` (#475) — `tcc.cwd` is always a `string` at runtime; relocated from `handlers/gates/bash-program.ts` (#475)
 ├── handlers/                 Handler classes with narrow constructor injection
 │   ├── index.ts              Barrel re-exports
-│   ├── lifecycle.ts          SessionLifecycleHandler (session: `PermissionSession` + resolver: `PermissionResolver` (getConfigIssues) + serviceLifecycle: `ServiceLifecycle` + audit: `DecisionSummaryWriter`); writes the decision-audit summary on `session_shutdown` (#341, #320, #452)
+│   ├── lifecycle.ts          SessionLifecycleHandler (session: `PermissionSession` + resolver: `PermissionResolver` (getConfigIssues) + serviceLifecycle: `ServiceLifecycle` + audit: `DecisionSummaryWriter` + prompt-queue lifecycle); invalidates interactive prompt generations on session start/shutdown and writes the decision-audit summary on `session_shutdown` (#341, #320, #452)
 │   ├── before-agent-start.ts AgentPrepHandler (session: `PermissionSession` + resolver: `PermissionResolver` (getToolPermission / skill check) + toolRegistry + warmParser: `() => void`); shouldExposeTool pure helper; recomputes the active set + system-prompt override every fire, no memoization (#341, #437); fire-and-forget `warmParser()` triggers the tree-sitter warm-up so the sync advisory bash path decomposes at gate parity (#309)
 │   ├── permission-gate-handler.ts PermissionGateHandler (session: `PermissionSession` + toolRegistry + pipeline + skillInputPipeline + runner); `handleToolCall` returns the internal total `GateOutcome` (SDK-shape translation moved to the boundary); `GateRunner` and `GateDecisionReporter` are built in `index.ts` and injected (#325, #329, #341, #452); validateRequestedTool + getEventInput + extractSkillNameFromInput pure helpers
 │   ├── tool-call-overrides.ts `ToolCallOverrides` - applies local-edit/web overrides, runs PreToolUse hooks, and resolves the per-domain fetch dialog after cross-cutting gates pass
@@ -859,12 +861,13 @@ src/
 ├── active-agent.ts            Agent name detection from session/system prompt
 ├── authority/                 Subagent detection, the Authorizer spine, and forwarded-permission escalation (seeded #529; forwarding subsystem relocated here #530; Authorizer spine landed #555; migration completed #559)
 │   ├── authorizer.ts          `Authorizer` interface (`authorize(details): Promise<PermissionPromptDecision>`) + `AuthorizerSelectionDeps` + `selectAuthorizer(ctx, deps)` - the once-per-activation hasUI/isSubagent/deny dispatch, replacing its re-derivation across the former `PromptingGateway`/`PermissionPrompter`/`ApprovalEscalator` (#555)
-│   ├── local-user-authorizer.ts `LocalUserAuthorizer` class - Authorizer for a session with UI and the single `permissions:ui_prompt` emit site: renders a forwarded ask's provenance (`details.forwarding`) as a non-degraded broadcast + `(Subagent)` title, then shows the dialog (#555, #557)
-│   ├── permission-dialog.ts   Standard dialog options plus local per-domain fetch_content choices (once / persistent / session / deny); relocated from `src/permission-dialog.ts` (#559)
+│   ├── interactive-prompt-queue.ts `InteractivePromptQueue` role + `InteractivePromptQueueLifecycle` invalidation role + `SerialInteractivePromptQueue` - rejection-safe FIFO serialization for complete local UI transactions, shared by standard/forwarded and web prompts; generation invalidation rejects stale active/queued callers and admits a fresh session
+│   ├── local-user-authorizer.ts `LocalUserAuthorizer` class - queued Authorizer for a session with UI and the standard `permissions:ui_prompt` emit site: renders a forwarded ask's provenance (`details.forwarding`) as a non-degraded broadcast + `(Subagent)` title, then holds the queue slot for the complete dialog transaction (#555, #557)
+│   ├── permission-dialog.ts   Standard dialog options plus local per-domain fetch_content choices (once / persistent / session / deny); races each primitive UI await against the queue generation's `AbortSignal` so invalidated interactions cannot open stale follow-up UI; relocated from `src/permission-dialog.ts` (#559)
 │   ├── denying-authorizer.ts  `DenyingAuthorizer` class - least-privilege Authorizer for a session with no reachable authority; denies with the `confirmationUnavailable` marker so the ask path derives the `confirmation_unavailable` resolution (#555, #556)
 │   ├── authorizer-selection.ts `AuthorizerSelection` class - context-owning `AskEscalator` implementation (`escalate(details)`); selects the `Authorizer` once per activation and delegates to it via `PermissionPrompter`; rewrite of `PromptingGateway`; `canConfirm()` dissolved (#555, #556)
 │   ├── permission-prompter.ts `PermissionPrompter` class (`PermissionPrompterApi`) - review-log bracketing (waiting → approved/denied) around `authorizer.authorize(details)`; `PromptPermissionDetails` type; relocated from `src/permission-prompter.ts`, drops per-call `ctx` threading (#555)
-│   ├── web-access-prompter.ts `WebAccessPrompter` class - local-only fetch-domain dialog with UI-prompt broadcast and review-log bracketing; deliberately bypasses forwarded authority because callers require `ctx.hasUI`
+│   ├── web-access-prompter.ts `WebAccessPrompter` class - local-only fetch-domain dialog with enqueue-time waiting log, dequeue-time UI-prompt broadcast, and queued outcome logging; shares the local interaction queue but deliberately bypasses forwarded authority because callers require `ctx.hasUI`
 │   ├── subagent-detection.ts  SubagentDetection class - single owner of subagent detection (SubagentDetector.isSubagent + RegisteredChildDetector.isRegisteredChild); delegates to subagent-context (#529)
 │   ├── subagent-context.ts    Pure subagent execution context detection (registry + env vars + filesystem)
 │   ├── subagent-registry.ts   SubagentSessionRegistry class + getSubagentSessionRegistry() process-global accessor - in-process subagent session tracking; relocated from `src/subagent-registry.ts` (#559)
@@ -1038,7 +1041,7 @@ Release-type note: Steps 1–3 are `refactor:` (hidden changelog type — they b
 
 ## Improvement roadmap — Phase 9: The Authorizer spine (complete)
 
-Phase 9 built the [authority model](#target-the-authority-model) spine that Phase 8 tidied for: the `Authorizer` interface and its three implementations (`LocalUserAuthorizer`, `ParentAuthorizer`, `DenyingAuthorizer`) selected once per session, `canConfirm()` dissolved so the ask path always escalates, `ForwardedRequestServer` rebuilt onto `evaluate()` plus the serving session's own `Authorizer` so parent `allow`/`deny` rules now govern a child's escalation, human-selectable grant-scope on forwarded approvals, and the mechanical completion of the `authority/` directory migration (flat `src/` root: ~67 → 62 modules).
+Phase 9 built the [authority model](#target-the-authority-model) spine that Phase 8 tidied for: the `Authorizer` interface and its three implementations (`LocalUserAuthorizer`, `ParentAuthorizer`, `DenyingAuthorizer`) selected once per activation, `canConfirm()` dissolved so the ask path always escalates, `ForwardedRequestServer` rebuilt onto `evaluate()` plus the serving session's own `Authorizer` so parent `allow`/`deny` rules now govern a child's escalation, human-selectable grant-scope on forwarded approvals, and the mechanical completion of the `authority/` directory migration (flat `src/` root: ~67 → 62 modules).
 
 All 5 steps are closed: [#555], [#556], [#557], [#558], [#559].
 Open issues swept and confirmed out of scope during planning: [#309], [#490], [#520], [#521], [#519], [#23].
@@ -1124,7 +1127,7 @@ Eight steps ([#525]–[#532]), all closed.
 
 ### Phase 9 — The Authorizer spine (complete)
 
-Built the [authority model](#target-the-authority-model) spine: the `Authorizer` interface and its three implementations (`LocalUserAuthorizer`, `ParentAuthorizer`, `DenyingAuthorizer`) selected once per session, `canConfirm()` dissolved so the ask path always escalates, `ForwardedRequestServer` rebuilt onto `evaluate()` plus the serving session's own `Authorizer` so parent `allow`/`deny` rules now govern a child's escalation, human-selectable grant-scope on forwarded approvals, and the mechanical completion of the `authority/` directory migration.
+Built the [authority model](#target-the-authority-model) spine: the `Authorizer` interface and its three implementations (`LocalUserAuthorizer`, `ParentAuthorizer`, `DenyingAuthorizer`) selected once per activation, `canConfirm()` dissolved so the ask path always escalates, `ForwardedRequestServer` rebuilt onto `evaluate()` plus the serving session's own `Authorizer` so parent `allow`/`deny` rules now govern a child's escalation, human-selectable grant-scope on forwarded approvals, and the mechanical completion of the `authority/` directory migration.
 Five steps ([#555]–[#559]), all closed.
 
 [#261]: https://github.com/gotgenes/pi-packages/issues/261

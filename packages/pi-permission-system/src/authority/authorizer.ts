@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { InteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import type {
   PermissionPromptDecision,
   requestPermissionDecisionFromUi,
@@ -33,6 +34,8 @@ export interface AuthorizerSelectionDeps {
   detection: SubagentDetector;
   /** Event bus used by `LocalUserAuthorizer` for the `permissions:ui_prompt` broadcast. */
   events: PermissionEventBus;
+  /** Shared queue for complete local UI interactions. */
+  queue: InteractivePromptQueue;
   /** Injected for testability; production callers pass the real function. */
   requestPermissionDecisionFromUi: typeof requestPermissionDecisionFromUi;
   /** Forwarding directory `ParentAuthorizer` reads/writes request and response files under. */
@@ -58,6 +61,7 @@ export function selectAuthorizer(
     return new LocalUserAuthorizer({
       ui: ctx.ui,
       events: deps.events,
+      queue: deps.queue,
       requestPermissionDecisionFromUi: deps.requestPermissionDecisionFromUi,
     });
   }

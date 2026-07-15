@@ -33,10 +33,17 @@ import {
 } from "#src/authority/permission-forwarding";
 import { SUBAGENT_CHILD_SESSION_CREATED } from "#src/authority/subagent-lifecycle-events";
 import { getSubagentSessionRegistry } from "#src/authority/subagent-registry";
-import { getGlobalConfigPath } from "#src/config-paths";
+import {
+  getGlobalConfigPath,
+  getGlobalLogsDir,
+  REVIEW_LOG_FILENAME,
+} from "#src/config-paths";
 import { DEFAULT_EXTENSION_CONFIG } from "#src/extension-config";
 import piPermissionSystemExtension from "#src/index";
-import { PERMISSIONS_READY_CHANNEL } from "#src/permission-events";
+import {
+  PERMISSIONS_READY_CHANNEL,
+  PERMISSIONS_UI_PROMPT_CHANNEL,
+} from "#src/permission-events";
 import { getPermissionsService } from "#src/service";
 import { makeFakePi } from "#test/helpers/make-fake-pi";
 
@@ -329,6 +336,166 @@ describe("service and gate share one formatter registry", () => {
     expect(result.block).toBeUndefined();
     expect(capturedTitles.some((t) => t.includes(previewMarker))).toBe(true);
 
+    rmSync(cwd, { recursive: true, force: true });
+  });
+});
+
+describe("interactive prompt queue wiring", () => {
+  it("serializes concurrent standard and web-domain prompts", async () => {
+    writeGlobalConfig({
+      allowWebAccess: true,
+      permission: { "*": "allow", demo: "ask", fetch_content: "ask" },
+    });
+
+    const cwd = mkdtempSync(join(tmpdir(), "pi-perm-queue-cwd-"));
+    const pi = makeFakePi({ toolNames: ["demo", "fetch_content"] });
+    piPermissionSystemExtension(pi as unknown as ExtensionAPI);
+    const uiPrompts: unknown[] = [];
+    pi.events.on(PERMISSIONS_UI_PROMPT_CHANNEL, (event) => {
+      uiPrompts.push(event);
+    });
+
+    const firstDecision = Promise.withResolvers<string | undefined>();
+    const secondDecision = Promise.withResolvers<string | undefined>();
+    const pendingDecisions = [firstDecision, secondDecision];
+    const select = vi.fn((title: string): Promise<string | undefined> => {
+      const decision = pendingDecisions.shift();
+      if (!decision) {
+        return Promise.reject(new Error(`Unexpected selector: ${title}`));
+      }
+      return decision.promise;
+    });
+    const ctx = {
+      cwd,
+      hasUI: true,
+      sessionManager: {
+        getEntries: (): unknown[] => [],
+        getSessionId: (): string => "queue-session",
+        getSessionDir: (): string => cwd,
+      },
+      ui: {
+        notify: (): void => {},
+        setStatus: (): void => {},
+        select,
+        input: async (): Promise<string | undefined> => undefined,
+      },
+    };
+    await fireSessionStart(pi, ctx);
+
+    const standardResult = pi.fire(
+      "tool_call",
+      { toolName: "demo", toolCallId: "standard-ask", input: {} },
+      ctx,
+    );
+    await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+
+    const webResult = pi.fire(
+      "tool_call",
+      {
+        toolName: "fetch_content",
+        toolCallId: "web-ask",
+        input: { url: "https://example.com" },
+      },
+      ctx,
+    );
+    const reviewLogPath = join(getGlobalLogsDir(agentDir), REVIEW_LOG_FILENAME);
+    await vi.waitFor(() => {
+      const entries = readFileSync(reviewLogPath, "utf8")
+        .trim()
+        .split("\n")
+        .map(
+          (line) => JSON.parse(line) as { event?: string; requestId?: string },
+        );
+      expect(entries).toContainEqual(
+        expect.objectContaining({
+          event: "permission_request.waiting",
+          requestId: "web-ask",
+        }),
+      );
+    });
+
+    expect(select).toHaveBeenCalledOnce();
+    expect(uiPrompts).toHaveLength(1);
+
+    firstDecision.resolve("Yes");
+    await expect(standardResult).resolves.toEqual({});
+    await vi.waitFor(() => expect(select).toHaveBeenCalledTimes(2));
+    expect(uiPrompts).toHaveLength(2);
+    expect(uiPrompts[1]).toEqual(
+      expect.objectContaining({ requestId: "web-ask" }),
+    );
+    expect(select.mock.calls[1]?.[0]).toContain(
+      "Allow fetch_content to access example.com?",
+    );
+
+    secondDecision.resolve("Yes");
+    await expect(webResult).resolves.toEqual({});
+    expect(select).toHaveBeenCalledTimes(2);
+
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("fails an old interaction closed and admits the next session", async () => {
+    writeGlobalConfig({
+      permission: { "*": "allow", demo: "ask" },
+    });
+
+    const cwd = mkdtempSync(join(tmpdir(), "pi-perm-queue-lifecycle-cwd-"));
+    const pi = makeFakePi({ toolNames: ["demo"] });
+    piPermissionSystemExtension(pi as unknown as ExtensionAPI);
+
+    const oldDecision = Promise.withResolvers<string | undefined>();
+    const newDecision = Promise.withResolvers<string | undefined>();
+    const oldSelect = vi.fn(() => oldDecision.promise);
+    const newSelect = vi.fn(() => newDecision.promise);
+    const makeCtxWithSelect = (
+      sessionId: string,
+      select: (title: string) => Promise<string | undefined>,
+    ) => ({
+      cwd,
+      hasUI: true,
+      sessionManager: {
+        getEntries: (): unknown[] => [],
+        getSessionId: (): string => sessionId,
+        getSessionDir: (): string => cwd,
+      },
+      ui: {
+        notify: (): void => {},
+        setStatus: (): void => {},
+        select,
+        input: async (): Promise<string | undefined> => undefined,
+      },
+    });
+    const oldCtx = makeCtxWithSelect("old-session", oldSelect);
+    const newCtx = makeCtxWithSelect("new-session", newSelect);
+    await fireSessionStart(pi, oldCtx);
+
+    const oldResult = pi.fire(
+      "tool_call",
+      { toolName: "demo", toolCallId: "old-ask", input: {} },
+      oldCtx,
+    );
+    await vi.waitFor(() => expect(oldSelect).toHaveBeenCalledOnce());
+
+    await fireSessionStart(pi, newCtx);
+    await expect(oldResult).resolves.toMatchObject({
+      block: true,
+      reason: expect.stringContaining("session changed"),
+    });
+
+    const newResult = pi.fire(
+      "tool_call",
+      { toolName: "demo", toolCallId: "new-ask", input: {} },
+      newCtx,
+    );
+    await vi.waitFor(() => expect(newSelect).toHaveBeenCalledOnce());
+    expect(oldSelect).toHaveBeenCalledOnce();
+
+    newDecision.resolve("Yes");
+    await expect(newResult).resolves.toEqual({});
+
+    oldDecision.resolve("Yes");
+    await Promise.resolve();
     rmSync(cwd, { recursive: true, force: true });
   });
 });

@@ -30,13 +30,14 @@ import { getGlobalConfigPath } from "./config-paths";
 import { ConfigStore } from "./config-store";
 import { DecisionAudit } from "./decision-audit";
 import { GateDecisionReporter } from "./decision-reporter";
-import { isYoloModeEnabled } from "./extension-config";
+import { DialogFallbackPermissionResolver } from "./dialog-fallback-permission-resolver";
 import { computeExtensionPaths } from "./extension-paths";
 import {
   AgentPrepHandler,
   PermissionGateHandler,
   SessionLifecycleHandler,
 } from "./handlers";
+import { PreToolUseHookGate } from "./handlers/gates/pre-tool-use-hook-gate";
 import { GateRunner } from "./handlers/gates/runner";
 import { SkillInputGatePipeline } from "./handlers/gates/skill-input-gate-pipeline";
 import { ToolCallGatePipeline } from "./handlers/gates/tool-call-gate-pipeline";
@@ -93,16 +94,9 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   // eslint-disable-next-line prefer-const -- forward-declared let; `const` requires an initializer
   let session: PermissionSession;
 
-  // Declared after the `configStore` forward declaration so the reader can
-  // close over it; every call runs after configStore is assigned below. yolo is
-  // a composition-stage ask→allow rewrite (#526) that the gate runner extends
-  // to asks synthesized after resolution (#712), so both share this reader.
-  const isYoloEnabled = (): boolean => isYoloModeEnabled(configStore.current());
-
   const permissionManager = new PermissionManager({
     agentDir,
     flavor: hostFlavor,
-    isYoloEnabled,
   });
 
   const logger = new PermissionSessionLogger({
@@ -159,14 +153,18 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     // Same registry instance the registerAuthorizer service surface writes to,
     // resolved in config order at activation.
     authorizerRegistry,
-    getAuthorizerChain: () => configStore.current().authorizerChain ?? [],
+    getAuthorizerChain: () => [],
   });
 
   // Resolver composes the manager + session ruleset and owns the
   // access-path → path-values unwrap. Constructed here (before `session`) so
   // the forwarded-request server's ServingPolicy can resolve against it; the
   // service and gates below share this one instance.
-  const resolver = new PermissionResolver(permissionManager, sessionRules);
+  const policyResolver = new PermissionResolver(
+    permissionManager,
+    sessionRules,
+  );
+  const dialogResolver = new DialogFallbackPermissionResolver(policyResolver);
 
   // Serving a forwarded request is resolution: resolve the child-fixed
   // ForwardedAccessIntent (ADR 0008) directly against the serving node's
@@ -175,7 +173,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   // PathNormalizer/cwd (#597).
   const servingPolicy: ServingPolicy = {
     resolve: (intent) =>
-      resolver.resolve(
+      dialogResolver.resolve(
         buildResolvedIntentFromMatchValues(
           intent.surface,
           intent.matchValues,
@@ -237,7 +235,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   });
 
   const permissionsService = new LocalPermissionsService(
-    resolver,
+    dialogResolver,
     session,
     formatterRegistry,
     accessExtractorRegistry,
@@ -272,14 +270,14 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   const audit = new DecisionAudit();
   const lifecycle = new SessionLifecycleHandler(
     session,
-    resolver,
+    policyResolver,
     serviceLifecycle,
     logger,
     audit,
   );
   const agentPrep = new AgentPrepHandler(
     session,
-    resolver,
+    dialogResolver,
     toolRegistry,
     () => {
       void warmBashParser();
@@ -287,25 +285,31 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   );
 
   const gateRunner = new GateRunner(
-    resolver,
+    dialogResolver,
     sessionRules,
     authorizerSelection,
     reporter,
-    isYoloEnabled,
+    () => false,
   );
   const toolCallGatePipeline = new ToolCallGatePipeline(
-    resolver,
+    dialogResolver,
     session,
     formatterRegistry,
     accessExtractorRegistry,
+    "dialog-fallback",
   );
-  const skillInputGatePipeline = new SkillInputGatePipeline(resolver);
+  const skillInputGatePipeline = new SkillInputGatePipeline(dialogResolver);
+  const preToolUseHooks = new PreToolUseHookGate(
+    () => configStore.current(),
+    reporter,
+  );
   const gates = new PermissionGateHandler(
     session,
     toolRegistry,
     toolCallGatePipeline,
     skillInputGatePipeline,
     gateRunner,
+    preToolUseHooks,
   );
 
   pi.on("session_start", (event, ctx) =>

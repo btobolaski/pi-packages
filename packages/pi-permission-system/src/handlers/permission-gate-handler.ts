@@ -13,6 +13,7 @@ import {
   type ToolRegistry,
 } from "#src/tool-registry";
 import { toRecord } from "#src/value-guards";
+import type { PreToolUseHookEvaluator } from "./gates/pre-tool-use-hook-gate";
 import type { GateRunner } from "./gates/runner";
 import type {
   GateNotifier,
@@ -43,6 +44,7 @@ export class PermissionGateHandler {
     private readonly pipeline: ToolCallGatePipeline,
     private readonly skillInputPipeline: SkillInputGatePipeline,
     private readonly runner: GateRunner,
+    private readonly preToolUseHooks: PreToolUseHookEvaluator,
   ) {}
 
   async handleToolCall(
@@ -73,6 +75,10 @@ export class PermissionGateHandler {
       cwd: ctx.cwd,
     };
 
+    const hookOutcome = await this.preToolUseHooks.evaluate(tcc, ctx);
+    if (hookOutcome.action !== "continue") {
+      return hookOutcome;
+    }
     return await this.pipeline.evaluate(tcc, this.runner);
   }
 

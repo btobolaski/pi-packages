@@ -1,11 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_EXTENSION_CONFIG } from "#src/extension-config";
+import {
+  PreToolUseHookGate,
+  type PreToolUseHookRunner,
+} from "#src/handlers/gates/pre-tool-use-hook-gate";
 import { normalizeHookMatcher } from "#src/hook-normalize";
 import { mergeHookDecisions, runPreToolUseHooks } from "#src/hook-runner";
 import type {
   HookExecutionContext,
+  MergedHookDecision,
   PreToolUseHookMatcher,
   PreToolUseHookResult,
 } from "#src/hook-types";
+import { makeReporter, makeTcc } from "#test/helpers/gate-fixtures";
+import { makeCtx } from "#test/helpers/handler-fixtures";
 
 function buildMatcher(raw: unknown): PreToolUseHookMatcher {
   const matcher = normalizeHookMatcher(raw);
@@ -63,6 +71,88 @@ describe("mergeHookDecisions", () => {
     expect(merged.decision).toBe("deny");
     expect(merged.updatedInput).toBe("hi");
     expect(merged.additionalContext).toBe("ctx");
+  });
+});
+
+describe("PreToolUseHookGate", () => {
+  const matcher = buildMatcher({
+    matcher: ".*",
+    hooks: [{ type: "command", command: "policy-check" }],
+  });
+
+  function makeGate(decision: MergedHookDecision) {
+    const reporter = makeReporter();
+    const runHooks = vi.fn<PreToolUseHookRunner>().mockResolvedValue(decision);
+    const gate = new PreToolUseHookGate(
+      () => ({
+        ...DEFAULT_EXTENSION_CONFIG,
+        allowLocalEdits: true,
+        hooks: { PreToolUse: [matcher] },
+      }),
+      reporter,
+      runHooks,
+    );
+    return { gate, reporter, runHooks };
+  }
+
+  it("short-circuits with allow and records hook provenance", async () => {
+    const { gate, reporter, runHooks } = makeGate({
+      decision: "allow",
+      reasons: ["approved by policy hook"],
+    });
+    const tcc = makeTcc({ toolCallId: "call-1" });
+
+    const outcome = await gate.evaluate(tcc, makeCtx());
+
+    expect(outcome).toEqual({ action: "allow" });
+    expect(runHooks).toHaveBeenCalledWith(
+      [matcher],
+      "bash",
+      tcc.input,
+      expect.objectContaining({ permission_mode: "acceptEdits" }),
+      "call-1",
+    );
+    expect(reporter.emitDecision).toHaveBeenCalledWith({
+      requestId: expect.any(String),
+      surface: "bash",
+      value: "cat .env",
+      result: "allow",
+      resolution: "hook_approved",
+      origin: "pretooluse_hook",
+      agentName: null,
+      matchedPattern: null,
+    });
+  });
+
+  it("blocks with the hook's denial reason", async () => {
+    const { gate, reporter } = makeGate({
+      decision: "deny",
+      reasons: ["unsafe command"],
+    });
+
+    const outcome = await gate.evaluate(makeTcc(), makeCtx());
+
+    expect(outcome).toEqual({
+      action: "block",
+      reason: "unsafe command",
+    });
+    expect(reporter.emitDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: "deny",
+        resolution: "hook_denied",
+      }),
+    );
+  });
+
+  it.each([
+    "ask",
+    "defer",
+  ] as const)("continues to the dialog fallback for %s", async (decision) => {
+    const { gate } = makeGate({ decision, reasons: [] });
+
+    await expect(gate.evaluate(makeTcc(), makeCtx())).resolves.toEqual({
+      action: "continue",
+    });
   });
 });
 

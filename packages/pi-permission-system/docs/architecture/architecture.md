@@ -82,7 +82,8 @@ Multi-hop escalation, three-way grant scope, terminal-replacement registration, 
  * Runtime:       "session" (session approvals).
  * Rewrite:       "yolo" (composition-stage ask→allow rewrite under yolo mode),
  *                "fail-closed" (composition-stage allow→ask floor when an
- *                invalid non-global config scope is detected).
+ *                invalid non-global config scope is detected),
+ *                "dialog-fallback" (hooks-first fallback synthesized an ask).
  */
 type RuleOrigin =
   | "global"
@@ -93,7 +94,8 @@ type RuleOrigin =
   | "baseline"
   | "session"
   | "yolo"
-  | "fail-closed";
+  | "fail-closed"
+  | "dialog-fallback";
 
 interface Rule {
   /** The permission surface: "bash", "edit", "mcp", "skill", "external_directory", "path", etc. */

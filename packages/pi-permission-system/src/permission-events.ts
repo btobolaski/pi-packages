@@ -112,7 +112,9 @@ export type PermissionDecisionResolution =
   | "auto_approved"
   | "confirmation_unavailable"
   /** The gate threw, or an escalation failed, and the request was blocked. */
-  | "gate_error";
+  | "gate_error"
+  | "hook_approved"
+  | "hook_denied";
 
 /** Payload emitted on `permissions:decision`. */
 export interface PermissionDecisionEvent {

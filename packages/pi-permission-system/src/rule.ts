@@ -13,7 +13,8 @@ import { type WildcardMatchOptions, wildcardMatch } from "./wildcard-matcher";
  * Runtime:       "session" (session approvals).
  * Rewrite:       "yolo" (composition-stage ask→allow rewrite under yolo mode),
  *                "fail-closed" (composition-stage allow→ask floor when an
- *                invalid non-global config scope is detected).
+ *                invalid non-global config scope is detected),
+ *                "dialog-fallback" (hooks-first fallback synthesized an ask).
  */
 export type RuleOrigin =
   | "global"
@@ -24,7 +25,8 @@ export type RuleOrigin =
   | "baseline"
   | "session"
   | "yolo"
-  | "fail-closed";
+  | "fail-closed"
+  | "dialog-fallback";
 
 /** A single permission rule — the atomic unit of policy. */
 export interface Rule {

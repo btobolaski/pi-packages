@@ -240,6 +240,7 @@ export function makeDedupWiring(prompter?: AskEscalator) {
     new ToolCallGatePipeline(resolver, session),
     new SkillInputGatePipeline(resolver),
     runner,
+    { evaluate: vi.fn().mockResolvedValue({ action: "continue" }) },
   );
   return { handler, prompter: resolvedPrompter, session };
 }

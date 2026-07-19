@@ -425,11 +425,77 @@ describe("service and gate share one formatter registry", () => {
   });
 });
 
-describe("service and gate share one access extractor registry", () => {
-  // An extractor registered through the published service must be consulted by
-  // the live gate handler — proving both reference the same
-  // ToolAccessExtractorRegistry instance the factory created once (#352).
-  it("path-gates a custom-shaped tool via a service-registered extractor", async () => {
+describe("hooks-first tool authority", () => {
+  it("lets a hook allow bypass a configured deny without showing a dialog", async () => {
+    writeGlobalConfig({
+      allowLocalEdits: true,
+      permission: { demo: "deny" },
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: "demo",
+            hooks: [
+              {
+                type: "command",
+                command:
+                  'grep -q \'"permission_mode":"acceptEdits"\' && printf \'%s\' \'{"hookSpecificOutput":{"permissionDecision":"allow"}}\'',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const cwd = mkdtempSync(join(tmpdir(), "pi-perm-hook-allow-"));
+    const pi = makeFakePi({ toolNames: ["demo"] });
+    piPermissionSystemExtension(pi as unknown as ExtensionAPI);
+    const prompts: string[] = [];
+    const { ctx } = makeUiCtx(cwd, prompts);
+    await fireSessionStart(pi, ctx);
+
+    const result = (await pi.fire(
+      "tool_call",
+      { toolName: "demo", toolCallId: "hook-allow", input: {} },
+      ctx,
+    )) as { block?: true };
+
+    expect(result.block).toBeUndefined();
+    expect(prompts).toEqual([]);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("shows one dialog when the hook defers despite a configured allow", async () => {
+    writeGlobalConfig({
+      permission: { demo: "allow" },
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: "demo",
+            hooks: [{ type: "command", command: "exit 0" }],
+          },
+        ],
+      },
+    });
+    const cwd = mkdtempSync(join(tmpdir(), "pi-perm-hook-defer-"));
+    const pi = makeFakePi({ toolNames: ["demo"] });
+    piPermissionSystemExtension(pi as unknown as ExtensionAPI);
+    const prompts: string[] = [];
+    const { ctx } = makeUiCtx(cwd, prompts);
+    await fireSessionStart(pi, ctx);
+
+    const result = (await pi.fire(
+      "tool_call",
+      { toolName: "demo", toolCallId: "hook-defer", input: {} },
+      ctx,
+    )) as { block?: true };
+
+    expect(result.block).toBeUndefined();
+    expect(prompts).toHaveLength(1);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+});
+
+describe("access extractors remain non-authoritative", () => {
+  it("prompts instead of enforcing a service-registered extractor's policy", async () => {
     writeGlobalConfig({
       permission: { "*": "allow", path: { "*.env": "deny" } },
     });
@@ -438,7 +504,8 @@ describe("service and gate share one access extractor registry", () => {
     const pi = makeFakePi({ toolNames: ["ffgrep"] });
     piPermissionSystemExtension(pi as unknown as ExtensionAPI);
 
-    const { ctx } = makeUiCtx(cwd, []);
+    const capturedTitles: string[] = [];
+    const { ctx } = makeUiCtx(cwd, capturedTitles);
     await fireSessionStart(pi, ctx);
 
     // ffgrep carries its path under a non-standard key; without the extractor
@@ -453,20 +520,15 @@ describe("service and gate share one access extractor registry", () => {
       ctx,
     )) as { block?: true };
 
-    // The path deny fired — so the gate extracted ffgrep's path through the
-    // same registry the service wrote to.
-    expect(result.block).toBe(true);
+    expect(result.block).toBeUndefined();
+    expect(capturedTitles).toHaveLength(1);
 
     rmSync(cwd, { recursive: true, force: true });
   });
 });
 
-describe("service and chain share one authorizer registry", () => {
-  // A link registered through the published service must be consulted by the
-  // live ask gate when the operator names it in authorizerChain — proving both
-  // the registerAuthorizer surface and AuthorizerSelection reference the same
-  // AuthorizerRegistry instance the factory created once (#599).
-  it("consults a service-registered, config-named link at the ask gate", async () => {
+describe("authorizer chains remain dormant", () => {
+  it("ignores a configured registered link and reaches the dialog", async () => {
     writeGlobalConfig({
       permission: { "*": "ask" },
       authorizerChain: ["typo-judge"],
@@ -492,11 +554,8 @@ describe("service and chain share one authorizer registry", () => {
       ctx,
     )) as { block?: true };
 
-    // The link denied before the (approving) UI terminal was reached — so the
-    // gate escalated through the same registry the service wrote to, and the
-    // config named it (opt-in activation).
-    expect(result.block).toBe(true);
-    expect(capturedTitles).toEqual([]);
+    expect(result.block).toBeUndefined();
+    expect(capturedTitles).toHaveLength(1);
 
     rmSync(cwd, { recursive: true, force: true });
   });
@@ -603,13 +662,8 @@ describe("single source of truth for session state", () => {
   });
 });
 
-describe("service path queries evaluate the supplied path (#503)", () => {
-  // Before #503 the service path query dropped the value (buildInputForSurface
-  // returned {} for the `path` surface), so the query collapsed to ["*"] and a
-  // path-specific rule never fired. The query now builds an AccessPath, so the
-  // supplied path flows through the resolver → manager and matches `path` rules
-  // end-to-end.
-  it("resolves a path-surface query against a deny rule on the supplied path", async () => {
+describe("service queries use dialog fallback", () => {
+  it("returns ask despite a matching path deny rule", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-perm-svc-path-cwd-"));
     const target = join(cwd, "secrets.env");
     writeGlobalConfig({ permission: { path: { [target]: "deny" } } });
@@ -619,14 +673,14 @@ describe("service path queries evaluate the supplied path (#503)", () => {
     await fireSessionStart(pi, makeChildCtx(cwd, "svc-path-session"));
 
     const result = getPermissionsService()!.checkPermission("path", target);
-    expect(result.state).toBe("deny");
+    expect(result.state).toBe("ask");
 
     rmSync(cwd, { recursive: true, force: true });
   });
 });
 
-describe("project trust gates project-scoped config (#644)", () => {
-  it("does not let an untrusted project's `bash: allow` override global `bash: deny`", async () => {
+describe("project policy remains non-authoritative", () => {
+  it("returns ask for an untrusted project regardless of configured policy", async () => {
     writeGlobalConfig({ permission: { "*": "ask", bash: "deny" } });
     const cwd = mkdtempSync(join(tmpdir(), "pi-perm-untrusted-cwd-"));
     writeProjectConfig(cwd, { permission: { bash: "allow" } });
@@ -638,15 +692,14 @@ describe("project trust gates project-scoped config (#644)", () => {
       makeBaseCtx(cwd, "untrusted-session", { isProjectTrusted: false }),
     );
 
-    // Global `deny` survives: the untrusted project scope was never loaded.
     expect(
       getPermissionsService()!.checkPermission("bash", "echo hi").state,
-    ).toBe("deny");
+    ).toBe("ask");
 
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("lets a trusted project's `bash: allow` override global `bash: deny`", async () => {
+  it("returns ask for a trusted project regardless of configured policy", async () => {
     writeGlobalConfig({ permission: { "*": "ask", bash: "deny" } });
     const cwd = mkdtempSync(join(tmpdir(), "pi-perm-trusted-cwd-"));
     writeProjectConfig(cwd, { permission: { bash: "allow" } });
@@ -658,10 +711,9 @@ describe("project trust gates project-scoped config (#644)", () => {
       makeBaseCtx(cwd, "trusted-session", { isProjectTrusted: true }),
     );
 
-    // The trusted project override applies (last-match-wins).
     expect(
       getPermissionsService()!.checkPermission("bash", "echo hi").state,
-    ).toBe("allow");
+    ).toBe("ask");
 
     rmSync(cwd, { recursive: true, force: true });
   });
@@ -745,7 +797,7 @@ describe("bash bare-token path gating (#509, #645)", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("leaves a bare token that does not match any path rule unaffected", async () => {
+  it("blocks a headless bare-token call when no hook approves it", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-perm-bare-token-cwd-"));
     writeGlobalConfig({
       permission: { "*": "allow", path: { id_rsa: "deny" } },
@@ -757,12 +809,12 @@ describe("bash bare-token path gating (#509, #645)", () => {
     await fireSessionStart(pi, ctx);
 
     const result = await fireBashToolCall(pi, ctx, "git status");
-    expect(result.block).toBeUndefined();
+    expect(result.block).toBe(true);
 
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("leaves a bare token naming no file unaffected even under a path deny rule (#645)", async () => {
+  it("blocks a headless absent-file call when no hook approves it", async () => {
     // The probe's precision: `id_rsa` matches the rule by spelling, but names
     // nothing here, so it is not an operand and is not gated.
     const cwd = mkdtempSync(join(tmpdir(), "pi-perm-bare-absent-cwd-"));
@@ -776,12 +828,12 @@ describe("bash bare-token path gating (#509, #645)", () => {
     await fireSessionStart(pi, ctx);
 
     const result = await fireBashToolCall(pi, ctx, "cat id_rsa");
-    expect(result.block).toBeUndefined();
+    expect(result.block).toBe(true);
 
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("leaves an existing bare file unrestricted when no explicit path rule matches (#58)", async () => {
+  it("blocks a headless existing-file call when no hook approves it", async () => {
     // The universal-fallback guard is what keeps probe promotion from becoming
     // a prompt firehose: a promoted token matching only the synthesized default
     // is unrestricted, so a real file with no rule naming it stays allowed.
@@ -797,7 +849,7 @@ describe("bash bare-token path gating (#509, #645)", () => {
     await fireSessionStart(pi, ctx);
 
     const result = await fireBashToolCall(pi, ctx, "cat README");
-    expect(result.block).toBeUndefined();
+    expect(result.block).toBe(true);
 
     rmSync(cwd, { recursive: true, force: true });
   });
@@ -1132,10 +1184,7 @@ describe("forwarded grant-scope selection round-trip", () => {
   });
 });
 
-describe("yolo grants asks synthesized after resolution", () => {
-  // The composition-stage ask→allow rewrite cannot reach a floor applied to a
-  // parsed command unit, so under yolo the wrapper and unparseable sentinels
-  // used to prompt anyway (#712). These drive the real factory end to end.
+describe("dialog fallback ignores yolo and configured policy", () => {
   async function runBashCommand(
     config: Record<string, unknown>,
     command: string,
@@ -1163,16 +1212,18 @@ describe("yolo grants asks synthesized after resolution", () => {
     permission: { "*": "allow", bash: { "*": "allow" } },
   };
 
-  it("auto-approves an indirection wrapper under yolo", async () => {
+  it("prompts for an indirection wrapper under yolo", async () => {
     const outcome = await runBashCommand(
       { ...permissiveBash, yoloMode: true },
       "git status | xargs grep foo",
     );
 
-    expect(outcome).toEqual({ blocked: false, prompts: [] });
+    expect(outcome.blocked).toBe(false);
+    expect(outcome.prompts).toHaveLength(1);
+    expect(outcome.prompts[0]).toContain("git status | xargs grep foo");
   });
 
-  it("still floors an indirection wrapper to a prompt with yolo off", async () => {
+  it("prompts for an indirection wrapper with yolo off", async () => {
     const outcome = await runBashCommand(
       { ...permissiveBash, yoloMode: false },
       "git status | xargs grep foo",
@@ -1180,19 +1231,21 @@ describe("yolo grants asks synthesized after resolution", () => {
 
     expect(outcome.blocked).toBe(false);
     expect(outcome.prompts).toHaveLength(1);
-    expect(outcome.prompts[0]).toContain("<indirection-bash-wrapper>");
+    expect(outcome.prompts[0]).toContain("git status | xargs grep foo");
   });
 
-  it("auto-approves an unparseable command under yolo", async () => {
+  it("prompts for an unparseable command under yolo", async () => {
     const outcome = await runBashCommand(
       { ...permissiveBash, yoloMode: true },
       "> out.txt",
     );
 
-    expect(outcome).toEqual({ blocked: false, prompts: [] });
+    expect(outcome.blocked).toBe(false);
+    expect(outcome.prompts).toHaveLength(1);
+    expect(outcome.prompts[0]).toContain("<unparseable-bash-command>");
   });
 
-  it("blocks a denied wrapper under yolo", async () => {
+  it("prompts despite a configured wrapper deny", async () => {
     const outcome = await runBashCommand(
       {
         permission: { "*": "allow", bash: { "*": "allow", "xargs*": "deny" } },
@@ -1201,15 +1254,17 @@ describe("yolo grants asks synthesized after resolution", () => {
       "git status | xargs grep foo",
     );
 
-    expect(outcome).toEqual({ blocked: true, prompts: [] });
+    expect(outcome.blocked).toBe(false);
+    expect(outcome.prompts).toHaveLength(1);
   });
 
-  it("blocks a denied unparseable command under yolo", async () => {
+  it("prompts despite a configured unparseable-command deny", async () => {
     const outcome = await runBashCommand(
       { permission: { "*": "allow", bash: { "*": "deny" } }, yoloMode: true },
       "> out.txt",
     );
 
-    expect(outcome).toEqual({ blocked: true, prompts: [] });
+    expect(outcome.blocked).toBe(false);
+    expect(outcome.prompts).toHaveLength(1);
   });
 });

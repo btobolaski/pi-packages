@@ -155,6 +155,36 @@ describe("ToolCallGatePipeline", () => {
     });
   });
 
+  describe("dialog fallback mode", () => {
+    it("runs only the final tool gate", async () => {
+      const resolver = makeResolver(makeCheckResult({ state: "ask" }));
+      const getActiveSkillEntries = vi.fn<() => []>(() => []);
+      const getInfrastructureReadDirs = vi.fn<() => string[]>(() => []);
+      const inputs = makeGateInputs({
+        getActiveSkillEntries,
+        getInfrastructureReadDirs,
+      });
+      const { runner } = makeGateRunner();
+      const run = vi.spyOn(runner, "run");
+      const pipeline = new ToolCallGatePipeline(
+        resolver,
+        inputs,
+        undefined,
+        undefined,
+        "dialog-fallback",
+      );
+
+      await pipeline.evaluate(
+        makeTcc({ toolName: "read", input: { path: "src/a.ts" } }),
+        runner,
+      );
+
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(getActiveSkillEntries).not.toHaveBeenCalled();
+      expect(getInfrastructureReadDirs).not.toHaveBeenCalled();
+    });
+  });
+
   // ── bash tool ────────────────────────────────────────────────────────────
 
   describe("evaluate — bash tool", () => {

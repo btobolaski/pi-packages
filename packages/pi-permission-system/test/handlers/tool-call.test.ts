@@ -99,6 +99,52 @@ describe("handleToolCall", () => {
     );
     expect(result).toMatchObject({ action: "block" });
   });
+
+  it("lets a hook allow bypass every built-in policy gate", async () => {
+    const checkPermission = vi
+      .fn()
+      .mockReturnValue(makeCheckResult({ state: "deny" }));
+    const { handler } = makeHandler({
+      session: { checkPermission },
+      preToolUseHooks: {
+        evaluate: vi.fn().mockResolvedValue({ action: "allow" }),
+      },
+    });
+
+    const result = await handler.handleToolCall(
+      makeToolCallEvent("read", { input: { path: ".env" } }),
+      makeCtx(),
+    );
+
+    expect(result).toEqual({ action: "allow" });
+    expect(checkPermission).not.toHaveBeenCalled();
+  });
+
+  it("honors a hook denial before built-in policy evaluation", async () => {
+    const checkPermission = vi
+      .fn()
+      .mockReturnValue(makeCheckResult({ state: "allow" }));
+    const { handler } = makeHandler({
+      session: { checkPermission },
+      preToolUseHooks: {
+        evaluate: vi.fn().mockResolvedValue({
+          action: "block",
+          reason: "denied by hook",
+        }),
+      },
+    });
+
+    const result = await handler.handleToolCall(
+      makeToolCallEvent("bash", { input: { command: "rm -rf /tmp/example" } }),
+      makeCtx(),
+    );
+
+    expect(result).toEqual({
+      action: "block",
+      reason: "denied by hook",
+    });
+    expect(checkPermission).not.toHaveBeenCalled();
+  });
 });
 
 // ── skill-read gate ────────────────────────────────────────────────────────

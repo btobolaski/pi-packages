@@ -37,6 +37,8 @@ import type { GateOutcome, ToolCallContext } from "./types";
  * site; no `implements` clause is needed and would create a layer-inversion
  * import from the domain module into the handler layer.
  */
+export type ToolCallGateMode = "full-policy" | "dialog-fallback";
+
 export interface ToolCallGateInputs {
   /** Active skill prompt entries for the skill-read gate. */
   getActiveSkillEntries(): SkillPromptEntry[];
@@ -71,6 +73,7 @@ export class ToolCallGatePipeline {
     private readonly inputs: ToolCallGateInputs,
     private readonly customFormatters?: ToolInputFormatterLookup,
     private readonly customExtractors?: ToolAccessExtractorLookup,
+    private readonly gateMode: ToolCallGateMode = "full-policy",
   ) {}
 
   async evaluate(
@@ -98,43 +101,56 @@ export class ToolCallGatePipeline {
       this.customFormatters,
     );
 
-    const infraDirs = this.inputs.getInfrastructureReadDirs();
+    const finalToolGate = (): GateResult => {
+      const { toolCheck, accessPath } = this.resolvePerToolCheck(
+        tcc,
+        shell,
+        bashProgram,
+        normalizer,
+      );
+      const toolDescriptor = describeToolGate(
+        tcc,
+        toolCheck,
+        formatter,
+        accessPath,
+        shell,
+      );
+      toolDescriptor.preCheck = toolCheck;
+      return toolDescriptor;
+    };
 
-    const gateProducers: Array<() => GateResult | Promise<GateResult>> = [
-      () =>
-        describeSkillReadGate(tcc, normalizer, () =>
-          this.inputs.getActiveSkillEntries(),
-        ),
-      () =>
-        describePathGate(tcc, this.resolver, normalizer, this.customExtractors),
-      () =>
-        describeExternalDirectoryGate(
-          tcc,
-          infraDirs,
-          this.resolver,
-          normalizer,
-          this.customExtractors,
-        ),
-      () => describeBashExternalDirectoryGate(tcc, bashProgram, this.resolver),
-      () => describeBashPathGate(tcc, bashProgram, this.resolver),
-      () => {
-        const { toolCheck, accessPath } = this.resolvePerToolCheck(
-          tcc,
-          shell,
-          bashProgram,
-          normalizer,
-        );
-        const toolDescriptor = describeToolGate(
-          tcc,
-          toolCheck,
-          formatter,
-          accessPath,
-          shell,
-        );
-        toolDescriptor.preCheck = toolCheck;
-        return toolDescriptor;
-      },
-    ];
+    const gateProducers: Array<() => GateResult | Promise<GateResult>> =
+      this.gateMode === "dialog-fallback"
+        ? [finalToolGate]
+        : [
+            () =>
+              describeSkillReadGate(tcc, normalizer, () =>
+                this.inputs.getActiveSkillEntries(),
+              ),
+            () =>
+              describePathGate(
+                tcc,
+                this.resolver,
+                normalizer,
+                this.customExtractors,
+              ),
+            () =>
+              describeExternalDirectoryGate(
+                tcc,
+                this.inputs.getInfrastructureReadDirs(),
+                this.resolver,
+                normalizer,
+                this.customExtractors,
+              ),
+            () =>
+              describeBashExternalDirectoryGate(
+                tcc,
+                bashProgram,
+                this.resolver,
+              ),
+            () => describeBashPathGate(tcc, bashProgram, this.resolver),
+            finalToolGate,
+          ];
 
     for (const produce of gateProducers) {
       const outcome = await runner.run(

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedAccessIntent } from "#src/access-intent/access-intent";
 import { AccessPath } from "#src/access-intent/access-path";
+import { DialogFallbackPermissionResolver } from "#src/dialog-fallback-permission-resolver";
 import { posixPathFlavor } from "#src/path/path-flavor";
 import type { ScopedPermissionManager } from "#src/permission-manager";
 import { PermissionResolver } from "#src/permission-resolver";
@@ -326,5 +327,80 @@ describe("PermissionResolver", () => {
       expect(pm.getConfigIssues).toHaveBeenCalledWith("agent-1");
       expect(result).toEqual(["issue-1"]);
     });
+  });
+});
+
+describe("DialogFallbackPermissionResolver", () => {
+  it("turns a configured policy decision into an ask", () => {
+    const permissionManager = makePermissionManager();
+    permissionManager.check.mockReturnValue({
+      state: "deny",
+      toolName: "bash",
+      source: "bash",
+      origin: "global",
+      matchedPattern: "rm *",
+      reason: "blocked by config",
+      command: "rm -rf /tmp/example",
+    });
+    const policyResolver = new PermissionResolver(
+      permissionManager,
+      new SessionRules(),
+    );
+    const resolver = new DialogFallbackPermissionResolver(policyResolver);
+
+    const result = resolver.resolve({
+      kind: "tool",
+      surface: "bash",
+      input: { command: "rm -rf /tmp/example" },
+    });
+
+    expect(result).toEqual({
+      state: "ask",
+      toolName: "bash",
+      source: "bash",
+      origin: "builtin",
+      matchedPattern: undefined,
+      reason: undefined,
+      command: "rm -rf /tmp/example",
+    });
+  });
+
+  it("preserves a user-granted session approval", () => {
+    const permissionManager = makePermissionManager();
+    permissionManager.check.mockReturnValue({
+      state: "allow",
+      toolName: "read",
+      source: "session",
+      origin: "session",
+      matchedPattern: "src/*",
+    });
+    const policyResolver = new PermissionResolver(
+      permissionManager,
+      new SessionRules(),
+    );
+    const resolver = new DialogFallbackPermissionResolver(policyResolver);
+
+    const result = resolver.resolve({
+      kind: "tool",
+      surface: "read",
+      input: { path: "src/a.ts" },
+    });
+
+    expect(result).toEqual({
+      state: "allow",
+      toolName: "read",
+      source: "session",
+      origin: "session",
+      matchedPattern: "src/*",
+    });
+  });
+
+  it("exposes every tool to the agent as ask", () => {
+    const { resolver: policyResolver } = makeResolver();
+    const resolver = new DialogFallbackPermissionResolver(policyResolver);
+
+    expect(resolver.getToolPermission("contact_supervisor", "agent")).toBe(
+      "ask",
+    );
   });
 });

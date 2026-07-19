@@ -260,6 +260,7 @@ describe("describeToolGate", () => {
       makeFormatter(),
       accessPath,
     );
+    expect(desc.promptDetails.path).toBe("src/foo.ts");
     expect(desc.promptDetails.accessIntent).toEqual({
       surface: "edit",
       matchValues: accessPath.matchValues(),

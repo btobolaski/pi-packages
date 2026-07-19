@@ -15,6 +15,7 @@ import type { AskEscalator } from "#src/authority/authorizer-selection";
 import type { ShellToolsConfig } from "#src/config-schema";
 import { GateDecisionReporter } from "#src/decision-reporter";
 import { DEFAULT_EXTENSION_CONFIG } from "#src/extension-config";
+import type { PreToolUseHookEvaluator } from "#src/handlers/gates/pre-tool-use-hook-gate";
 import { GateRunner } from "#src/handlers/gates/runner";
 import {
   type SkillInputGateInputs,
@@ -85,6 +86,7 @@ export function makeCtx(
     },
     sessionManager: {
       getEntries: vi.fn().mockReturnValue([]),
+      getSessionId: vi.fn().mockReturnValue("session-test"),
       getSessionDir: vi.fn().mockReturnValue("/sessions/test"),
       addEntry: vi.fn(),
     },
@@ -238,6 +240,8 @@ export function makeHandler(overrides?: {
   shellTools?: ShellToolsConfig;
   /** Standing yolo setting for the runner's residual-ask grant (#712). */
   yolo?: boolean;
+  /** PreToolUse hook gate outcome; defaults to continuing into built-in gates. */
+  preToolUseHooks?: PreToolUseHookEvaluator;
 }) {
   const configStore =
     overrides?.shellTools !== undefined
@@ -325,12 +329,17 @@ export function makeHandler(overrides?: {
     reporter,
     () => overrides?.yolo ?? false,
   );
+  const preToolUseHooks: PreToolUseHookEvaluator =
+    overrides?.preToolUseHooks ?? {
+      evaluate: vi.fn().mockResolvedValue({ action: "continue" }),
+    };
   const handler = new PermissionGateHandler(
     session,
     toolRegistry,
     pipeline,
     skillInputPipeline,
     runner,
+    preToolUseHooks,
   );
   return {
     handler,

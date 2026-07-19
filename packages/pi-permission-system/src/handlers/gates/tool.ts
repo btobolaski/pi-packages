@@ -79,11 +79,8 @@ export function describeToolGate(
     formatter,
   );
 
-  const decisionValue = deriveDecisionValue(
-    gateSurface,
-    check,
-    getPathBearingToolPath(tcc.toolName, tcc.input) ?? undefined,
-  );
+  const toolPath = getPathBearingToolPath(tcc.toolName, tcc.input) ?? undefined;
+  const decisionValue = deriveDecisionValue(gateSurface, check, toolPath);
 
   // A path-bearing tool carries the AccessPath's alias set; every other surface
   // (bash command, MCP target, plain tool) carries its already-portable value.
@@ -110,6 +107,7 @@ export function describeToolGate(
       message: askMessage,
       toolCallId: tcc.toolCallId,
       toolName: tcc.toolName,
+      path: toolPath,
       sessionLabel: suggestion.label,
       accessIntent,
       ...permissionLogContext,

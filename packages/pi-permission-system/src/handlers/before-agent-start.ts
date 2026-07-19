@@ -2,9 +2,11 @@ import type {
   BeforeAgentStartEventResult,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import type { PermissionResolver } from "#src/permission-resolver";
 import type { PermissionSession } from "#src/permission-session";
-import { resolveSkillPromptEntries } from "#src/skill-prompt-sanitizer";
+import {
+  resolveSkillPromptEntries,
+  type SkillPermissionChecker,
+} from "#src/skill-prompt-sanitizer";
 import { sanitizeAvailableToolsSection } from "#src/system-prompt-sanitizer";
 import { getToolNameFromValue, type ToolRegistry } from "#src/tool-registry";
 import type { PermissionState } from "#src/types";
@@ -12,6 +14,10 @@ import type { PermissionState } from "#src/types";
 /** Minimal subset of BeforeAgentStartEvent used by this handler. */
 interface BeforeAgentStartPayload {
   systemPrompt: string;
+}
+
+interface AgentPrepPermissionResolver extends SkillPermissionChecker {
+  getToolPermission(toolName: string, agentName?: string): PermissionState;
 }
 
 /**
@@ -47,7 +53,7 @@ export function shouldExposeTool(
 export class AgentPrepHandler {
   constructor(
     private readonly session: PermissionSession,
-    private readonly resolver: PermissionResolver,
+    private readonly resolver: AgentPrepPermissionResolver,
     private readonly toolRegistry: ToolRegistry,
     private readonly warmParser: () => void,
   ) {}

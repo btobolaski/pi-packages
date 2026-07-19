@@ -102,15 +102,17 @@ describe("ToolCallGatePipeline", () => {
       expect(runSpy).toHaveBeenCalledTimes(1);
     });
 
-    it("does not run tool overrides until every cross-cutting gate passes", async () => {
+    it("does not run tool overrides until the path gate passes", async () => {
       const resolver = makeResolver(makeCheckResult());
       const inputs = makeGateInputs();
       const { runner } = makeGateRunner();
-      vi.spyOn(runner, "run").mockResolvedValue({
-        action: "block",
-        reason: "path gate blocked",
-      });
-      const overrides = { apply: vi.fn() };
+      vi.spyOn(runner, "run")
+        .mockResolvedValueOnce({ action: "allow" })
+        .mockResolvedValueOnce({
+          action: "block",
+          reason: "path gate blocked",
+        });
+      const overrides = { evaluateHooks: vi.fn(), apply: vi.fn() };
       const pipeline = new ToolCallGatePipeline(
         resolver,
         inputs,
@@ -126,6 +128,83 @@ describe("ToolCallGatePipeline", () => {
       );
 
       expect(result).toEqual({ action: "block", reason: "path gate blocked" });
+      expect(overrides.evaluateHooks).not.toHaveBeenCalled();
+      expect(overrides.apply).not.toHaveBeenCalled();
+    });
+
+    it("lets a hook allow bypass the external-directory gate", async () => {
+      const resolver = makeResolver();
+      resolver.resolve.mockImplementation((intent) =>
+        intent.surface === "external_directory"
+          ? makeCheckResult({ state: "deny", toolName: "external_directory" })
+          : makeCheckResult({ toolName: intent.surface }),
+      );
+      const inputs = makeGateInputs();
+      const { runner } = makeGateRunner();
+      const hookOutcome = { action: "allow" as const };
+      const overrides = {
+        evaluateHooks: vi.fn().mockResolvedValue(hookOutcome),
+        apply: vi.fn().mockResolvedValue({ action: "allow" as const }),
+      };
+      const pipeline = new ToolCallGatePipeline(
+        resolver,
+        inputs,
+        undefined,
+        undefined,
+        overrides,
+      );
+
+      const result = await pipeline.evaluate(
+        makeTcc({ toolName: "read", input: { path: "/outside/file.txt" } }),
+        runner,
+        makeCtx(),
+      );
+
+      expect(result).toEqual({ action: "allow" });
+      expect(overrides.evaluateHooks).toHaveBeenCalledTimes(1);
+      expect(overrides.apply).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        expect.anything(),
+        hookOutcome,
+      );
+      expect(resolver.resolve).not.toHaveBeenCalledWith(
+        expect.objectContaining({ surface: "external_directory" }),
+      );
+    });
+
+    it("keeps the external-directory gate active when hooks defer", async () => {
+      const resolver = makeResolver();
+      resolver.resolve.mockImplementation((intent) =>
+        intent.surface === "external_directory"
+          ? makeCheckResult({ state: "deny", toolName: "external_directory" })
+          : makeCheckResult({ toolName: intent.surface }),
+      );
+      const inputs = makeGateInputs();
+      const { runner } = makeGateRunner();
+      const overrides = {
+        evaluateHooks: vi.fn().mockResolvedValue({
+          action: "continue" as const,
+          decision: "defer" as const,
+        }),
+        apply: vi.fn(),
+      };
+      const pipeline = new ToolCallGatePipeline(
+        resolver,
+        inputs,
+        undefined,
+        undefined,
+        overrides,
+      );
+
+      const result = await pipeline.evaluate(
+        makeTcc({ toolName: "read", input: { path: "/outside/file.txt" } }),
+        runner,
+        makeCtx(),
+      );
+
+      expect(result).toMatchObject({ action: "block" });
       expect(overrides.apply).not.toHaveBeenCalled();
     });
 

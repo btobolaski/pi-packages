@@ -199,8 +199,8 @@ When both runtime overrides are enabled, `bypassPermissions` takes precedence.
 | Other exit code, spawn error, or timeout | Defer to the existing permission result                         |
 
 Multiple hook results merge with `deny > ask > allow > defer` priority.
-Hooks run after the local-edit and web-access overrides but before the `fetch_content` domain dialog.
-A hook `deny` always blocks, a hook `allow` forces the final tool check to allow, and a hook `ask` forces the final tool check to ask unless an explicit runtime override already allowed it.
+Hooks run after the cross-cutting `path` gate and before the `external_directory` gates.
+A hook `deny` always blocks, a hook `allow` bypasses the external-directory checks and forces the final tool check to allow, and a hook `ask` forces the final tool check to ask unless an explicit runtime override later allows it.
 The extension logs hook-provided `updatedInput` and `additionalContext`, but Pi's tool-call hook result cannot apply either field, so both are otherwise ignored.
 
 ### `piInfrastructureReadPaths` patterns

@@ -2,7 +2,10 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { AccessPath } from "#src/access-intent/access-path";
 import { BashProgram } from "#src/access-intent/bash/program";
 import { classifyToolKind } from "#src/access-intent/tool-kind";
-import type { ToolCheckOverrides } from "#src/handlers/tool-call-overrides";
+import type {
+  ToolCheckOverrides,
+  ToolHookOutcome,
+} from "#src/handlers/tool-call-overrides";
 import type { PathNormalizer } from "#src/path-normalizer";
 import type { ScopedPermissionResolver } from "#src/permission-resolver";
 import type { SkillPromptEntry } from "#src/skill-prompt-sanitizer";
@@ -60,7 +63,8 @@ export interface ToolCallGateInputs {
  * - bash-command extraction and single `BashProgram.parse` (#308)
  * - `ToolPreviewFormatter` construction from `getToolPreviewLimits()`
  * - infrastructure-dir list from `getInfrastructureReadDirs()`
- * - all six gate producers in their prescribed order
+ * - the five gate producers in their prescribed order
+ * - PreToolUse hook evaluation between path and external-directory gates
  * - the run loop that returns the first block outcome, or allow
  */
 export class ToolCallGatePipeline {
@@ -98,35 +102,17 @@ export class ToolCallGatePipeline {
     );
 
     const infraDirs = this.inputs.getInfrastructureReadDirs();
-
-    const gateProducers: Array<() => GateResult | Promise<GateResult>> = [
+    const preHookGates: Array<() => GateResult | Promise<GateResult>> = [
       () =>
         describeSkillReadGate(tcc, normalizer, () =>
           this.inputs.getActiveSkillEntries(),
         ),
       () =>
         describePathGate(tcc, this.resolver, normalizer, this.customExtractors),
-      () =>
-        describeExternalDirectoryGate(
-          tcc,
-          infraDirs,
-          this.resolver,
-          normalizer,
-          this.customExtractors,
-        ),
-      () => describeBashExternalDirectoryGate(tcc, bashProgram, this.resolver),
-      () => describeBashPathGate(tcc, bashProgram, this.resolver),
     ];
-
-    for (const produce of gateProducers) {
-      const outcome = await runner.run(
-        await produce(),
-        tcc.agentName,
-        tcc.toolCallId,
-      );
-      if (outcome.action === "block") {
-        return outcome;
-      }
+    const preHookOutcome = await this.runGates(preHookGates, tcc, runner);
+    if (preHookOutcome.action === "block") {
+      return preHookOutcome;
     }
 
     const { toolCheck, accessPath } = this.resolvePerToolCheck(
@@ -135,9 +121,49 @@ export class ToolCallGatePipeline {
       command,
       normalizer,
     );
+    const hookOutcome: ToolHookOutcome =
+      this.overrides && ctx
+        ? await this.overrides.evaluateHooks(tcc, ctx, toolCheck, formatter)
+        : { action: "continue", decision: "defer" };
+    if (hookOutcome.action === "block") {
+      return hookOutcome;
+    }
+
+    const postHookGates: Array<() => GateResult | Promise<GateResult>> = [
+      ...(hookOutcome.action === "allow"
+        ? []
+        : [
+            () =>
+              describeExternalDirectoryGate(
+                tcc,
+                infraDirs,
+                this.resolver,
+                normalizer,
+                this.customExtractors,
+              ),
+            () =>
+              describeBashExternalDirectoryGate(
+                tcc,
+                bashProgram,
+                this.resolver,
+              ),
+          ]),
+      () => describeBashPathGate(tcc, bashProgram, this.resolver),
+    ];
+    const postHookOutcome = await this.runGates(postHookGates, tcc, runner);
+    if (postHookOutcome.action === "block") {
+      return postHookOutcome;
+    }
+
     const overrideOutcome =
       this.overrides && ctx
-        ? await this.overrides.apply(tcc, ctx, toolCheck, formatter)
+        ? await this.overrides.apply(
+            tcc,
+            ctx,
+            toolCheck,
+            formatter,
+            hookOutcome,
+          )
         : { action: "continue" as const, check: toolCheck };
     if (overrideOutcome.action !== "continue") {
       return overrideOutcome;
@@ -151,6 +177,24 @@ export class ToolCallGatePipeline {
     );
     toolDescriptor.preCheck = overrideOutcome.check;
     return await runner.run(toolDescriptor, tcc.agentName, tcc.toolCallId);
+  }
+
+  private async runGates(
+    gateProducers: Array<() => GateResult | Promise<GateResult>>,
+    tcc: ToolCallContext,
+    runner: GateRunner,
+  ): Promise<GateOutcome> {
+    for (const produce of gateProducers) {
+      const outcome = await runner.run(
+        await produce(),
+        tcc.agentName,
+        tcc.toolCallId,
+      );
+      if (outcome.action === "block") {
+        return outcome;
+      }
+    }
+    return { action: "allow" };
   }
 
   /**

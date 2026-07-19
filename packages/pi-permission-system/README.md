@@ -119,8 +119,9 @@ The cross-cutting `path` and `external_directory` gates still run first, so this
 `allowWebAccess` auto-approves `web_search` and `get_search_content` and adds one-off, persistent, and session-scoped domain choices for `fetch_content`.
 Persistent hostnames are stored in `allowedFetchDomains`.
 
-Claude Code-compatible `PreToolUse` hooks can inspect and decide tool calls after the runtime overrides but before the `fetch_content` domain dialog.
-Hook decisions merge with `deny > ask > allow > defer` priority, and a hook denial can veto either runtime override.
+Claude Code-compatible `PreToolUse` hooks can inspect and decide tool calls after the cross-cutting `path` gate and before the `external_directory` gates.
+A hook allow bypasses the external-directory checks and forces the final tool check to allow, while a hook denial blocks the call before runtime overrides.
+Hook decisions merge with `deny > ask > allow > defer` priority.
 
 ```jsonc
 {

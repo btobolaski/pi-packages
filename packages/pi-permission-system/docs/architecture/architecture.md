@@ -305,21 +305,21 @@ Per-tool path maps for extension tools (a custom extractor key per tool) are a d
 
 ## Runtime overrides and PreToolUse hooks
 
-`ToolCallGatePipeline` preserves the cross-cutting gate order before delegating the final tool check to `ToolCallOverrides`:
+`ToolCallGatePipeline` preserves the cross-cutting gate order while evaluating hooks early enough to authorize external-directory access:
 
 1. Skill-read gate.
 2. Cross-cutting `path` gate.
-3. Tool `external_directory` gate.
-4. Bash `external_directory` gate.
-5. Bash `path` gate.
-6. Final per-tool resolution.
-7. `allowLocalEdits` and `allowWebAccess` overrides.
-8. Claude-compatible `PreToolUse` hooks.
+3. Final per-tool policy resolution.
+4. Claude-compatible `PreToolUse` hooks.
+5. Tool `external_directory` gate, skipped when the hook result is `allow`.
+6. Bash `external_directory` gate, skipped when the hook result is `allow`.
+7. Bash `path` gate.
+8. `allowLocalEdits` and `allowWebAccess` overrides, combined with the previously evaluated hook result.
 9. The per-domain `fetch_content` dialog when the request still needs a decision.
 10. The ordinary per-tool `GateRunner` path when no earlier stage handled the call.
 
-This ordering prevents a convenience override or hook allow from bypassing path and outside-CWD policy.
-A hook denial can still veto a convenience override, while a hook ask does not undo an explicit override allow.
+This ordering keeps the cross-cutting path policy authoritative while allowing an explicit hook allow to bypass outside-CWD policy.
+A hook denial blocks before convenience overrides, while a hook ask does not undo an explicit override allow.
 
 The hook subsystem is separated into normalization, matching, command execution, and decision merging modules.
 Commands execute sequentially with the Claude-compatible payload on stdin, and their results merge with `deny > ask > allow > defer` priority.
@@ -797,13 +797,13 @@ src/
 │   ├── lifecycle.ts          SessionLifecycleHandler (session: `PermissionSession` + resolver: `PermissionResolver` (getConfigIssues) + serviceLifecycle: `ServiceLifecycle` + audit: `DecisionSummaryWriter` + prompt-queue lifecycle); invalidates interactive prompt generations on session start/shutdown and writes the decision-audit summary on `session_shutdown` (#341, #320, #452)
 │   ├── before-agent-start.ts AgentPrepHandler (session: `PermissionSession` + resolver: `PermissionResolver` (getToolPermission / skill check) + toolRegistry + warmParser: `() => void`); shouldExposeTool pure helper; recomputes the active set + system-prompt override every fire, no memoization (#341, #437); fire-and-forget `warmParser()` triggers the tree-sitter warm-up so the sync advisory bash path decomposes at gate parity (#309)
 │   ├── permission-gate-handler.ts PermissionGateHandler (session: `PermissionSession` + toolRegistry + pipeline + skillInputPipeline + runner); `handleToolCall` returns the internal total `GateOutcome` (SDK-shape translation moved to the boundary); `GateRunner` and `GateDecisionReporter` are built in `index.ts` and injected (#325, #329, #341, #452); validateRequestedTool + getEventInput + extractSkillNameFromInput pure helpers
-│   ├── tool-call-overrides.ts `ToolCallOverrides` - applies local-edit/web overrides, runs PreToolUse hooks, and resolves the per-domain fetch dialog after cross-cutting gates pass
+│   ├── tool-call-overrides.ts `ToolCallOverrides` - evaluates PreToolUse hooks between the path and external-directory gates, applies local-edit/web overrides, and resolves the per-domain fetch dialog
 │   ├── tool-call-boundary.ts `createFailClosedToolCall(gate, reporter, audit, tracer)` - the only `pi.on("tool_call")` target and sole `GateOutcome` -> SDK-shape translator; owns the `try/catch -> block` (the SDK's `emitToolCall` does not catch a throwing handler), writes a `gate_error` review entry on throw, and emits a `debugLog`-gated `permission.decision` trace per call; `DecisionTracer` interface + defensive `bestEffort*` event readers (#452)
 │   └── gates/               Pure descriptor factories + runner
 │       ├── types.ts          GateOutcome, ToolCallContext
 │       ├── descriptor.ts     GateDescriptor (with DenialContext), GateBypass, GateResult types
 │       ├── runner.ts         GateRunner class — constructed with three distinct collaborators: `ScopedPermissionResolver` (resolver), `SessionApprovalRecorder` (`SessionRules` recorder), `AskEscalator` (`AuthorizerSelection`, #555, #556; the single-method ask-escalation seam that replaced `GatePrompter`), plus `DecisionReporter`; `run(gate, agentName, toolCallId)` dispatches null / bypass / descriptor (#341)
-│       ├── tool-call-gate-pipeline.ts `ToolCallGateInputs` interface (query methods: `getActiveSkillEntries`, `getInfrastructureReadDirs`, `getToolPreviewLimits`, `getPathNormalizer`, `getPromotablePathTokenMatcher`) + `ToolCallGatePipeline` class — constructed with `ScopedPermissionResolver` + `ToolCallGateInputs`; owns bash-command extraction + single `BashProgram.parse` (fed the session `PathNormalizer` and the agent-scoped `getPromotablePathTokenMatcher()` predicate, #510, #509), `ToolPreviewFormatter` construction, infra-dir list, the five cross-cutting gate producers, and final per-tool resolution; invokes `ToolCheckOverrides` only after every cross-cutting gate passes, then routes the effective check through `GateRunner`
+│       ├── tool-call-gate-pipeline.ts `ToolCallGateInputs` interface (query methods: `getActiveSkillEntries`, `getInfrastructureReadDirs`, `getToolPreviewLimits`, `getPathNormalizer`, `getPromotablePathTokenMatcher`) + `ToolCallGatePipeline` class — constructed with `ScopedPermissionResolver` + `ToolCallGateInputs`; owns bash-command extraction + single `BashProgram.parse` (fed the session `PathNormalizer` and the agent-scoped `getPromotablePathTokenMatcher()` predicate, #510, #509), `ToolPreviewFormatter` construction, infra-dir list, the five cross-cutting gate producers, and final per-tool resolution; invokes `ToolCheckOverrides` after the path gate so a hook allow can skip external-directory gates, then routes the effective check through `GateRunner`
 │       ├── skill-input-gate-pipeline.ts `SkillInputGateInputs` + `GateNotifier` interfaces + `SkillInputGatePipeline` class — constructed once in the composition root and injected into `PermissionGateHandler`; owns raw `checkPermission` pre-check, deny notify, `describeSkillInputGate` descriptor, request-id mint (`createSkillInputRequestId`), and `runner.run`; `evaluate(skillName, agentName, notifier, runner)` makes the `input` path symmetric with the `tool_call` path (#329, absorbs #330)
 │       ├── helpers.ts        deriveDecisionValue, deriveResolution, buildDecisionEvent
 │       ├── skill-read.ts     describeSkillReadGate - pure descriptor factory

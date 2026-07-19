@@ -54,18 +54,30 @@ export type ToolOverrideOutcome =
   | { action: "allow" }
   | { action: "block"; reason: string };
 
+export type ToolHookOutcome =
+  | { action: "continue"; decision: "defer" | "ask" }
+  | { action: "allow" }
+  | { action: "block"; reason: string };
+
 export interface ToolCheckOverrides {
+  evaluateHooks(
+    tcc: ToolCallContext,
+    ctx: ExtensionContext,
+    policyCheck: PermissionCheckResult,
+    formatter: ToolPreviewFormatter,
+  ): Promise<ToolHookOutcome>;
   apply(
     tcc: ToolCallContext,
     ctx: ExtensionContext,
     policyCheck: PermissionCheckResult,
     formatter: ToolPreviewFormatter,
+    hookOutcome?: ToolHookOutcome,
   ): Promise<ToolOverrideOutcome>;
 }
 
 /**
- * Applies explicit runtime overrides and PreToolUse hooks to the final
- * per-tool check, after every cross-cutting path/bash gate has passed.
+ * Evaluates PreToolUse hooks before external-directory gates, then applies
+ * explicit runtime overrides to the final per-tool check.
  */
 export class ToolCallOverrides implements ToolCheckOverrides {
   constructor(
@@ -80,30 +92,31 @@ export class ToolCallOverrides implements ToolCheckOverrides {
     ctx: ExtensionContext,
     policyCheck: PermissionCheckResult,
     formatter: ToolPreviewFormatter,
+    evaluatedHookOutcome?: ToolHookOutcome,
   ): Promise<ToolOverrideOutcome> {
     const permissionLogContext = formatter.getPermissionLogContext(
       policyCheck,
       tcc.input,
       PATH_BEARING_TOOLS,
     );
+    const hookOutcome =
+      evaluatedHookOutcome ??
+      (await this.evaluateHooks(tcc, ctx, policyCheck, formatter));
+    if (hookOutcome.action === "block") {
+      return hookOutcome;
+    }
+
     const override = this.applyConfigOverrides(
       tcc,
       policyCheck,
       permissionLogContext,
     );
-    const hookOutcome = await this.applyHooks(
-      tcc,
-      ctx,
-      policyCheck,
-      override.check,
-      override.active,
-      permissionLogContext,
-    );
-    if (hookOutcome.action === "block") {
-      return hookOutcome;
-    }
-
-    const effectiveCheck = hookOutcome.check;
+    const effectiveCheck =
+      hookOutcome.action === "allow"
+        ? { ...override.check, state: "allow" as const }
+        : hookOutcome.decision === "ask" && !override.active
+          ? { ...override.check, state: "ask" as const }
+          : override.check;
     if (
       effectiveCheck.state === "allow" ||
       tcc.toolName !== "fetch_content" ||
@@ -214,20 +227,15 @@ export class ToolCallOverrides implements ToolCheckOverrides {
     return { check, active };
   }
 
-  private async applyHooks(
+  async evaluateHooks(
     tcc: ToolCallContext,
     ctx: ExtensionContext,
     policyCheck: PermissionCheckResult,
-    effectiveCheck: PermissionCheckResult,
-    overrideActive: boolean,
-    permissionLogContext: Record<string, unknown>,
-  ): Promise<
-    | { action: "continue"; check: PermissionCheckResult }
-    | { action: "block"; reason: string }
-  > {
+    formatter: ToolPreviewFormatter,
+  ): Promise<ToolHookOutcome> {
     const matchers = this.session.getHooks()?.PreToolUse;
     if (!matchers || matchers.length === 0) {
-      return { action: "continue", check: effectiveCheck };
+      return { action: "continue", decision: "defer" };
     }
 
     const hookDecision = await runPreToolUseHooks(
@@ -243,13 +251,12 @@ export class ToolCallOverrides implements ToolCheckOverrides {
       tcc.toolCallId,
     );
     if (hookDecision.decision === "defer") {
-      return { action: "continue", check: effectiveCheck };
+      return { action: "continue", decision: "defer" };
     }
 
     this.logger.debug("hook.pretooluse_result", {
       toolName: tcc.toolName,
       policyState: policyCheck.state,
-      effectiveState: effectiveCheck.state,
       hookDecision: hookDecision.decision,
       hookReasons: hookDecision.reasons,
     });
@@ -271,6 +278,11 @@ export class ToolCallOverrides implements ToolCheckOverrides {
         hookDecision.reasons.length > 0
           ? hookDecision.reasons.join("; ")
           : "Blocked by PreToolUse hook";
+      const permissionLogContext = formatter.getPermissionLogContext(
+        policyCheck,
+        tcc.input,
+        PATH_BEARING_TOOLS,
+      );
       this.reporter.writeReviewLog("permission_request.blocked", {
         source: "pretooluse_hook",
         toolCallId: tcc.toolCallId,
@@ -283,18 +295,9 @@ export class ToolCallOverrides implements ToolCheckOverrides {
       return { action: "block", reason };
     }
     if (hookDecision.decision === "allow") {
-      return {
-        action: "continue",
-        check: { ...effectiveCheck, state: "allow" },
-      };
+      return { action: "allow" };
     }
-    if (!overrideActive) {
-      return {
-        action: "continue",
-        check: { ...effectiveCheck, state: "ask" },
-      };
-    }
-    return { action: "continue", check: effectiveCheck };
+    return { action: "continue", decision: "ask" };
   }
 
   private async promptForDomain(

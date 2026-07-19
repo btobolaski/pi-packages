@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { EXTENSION_TAG } from "#src/denial-messages";
 import { formatExternalDirectoryAskPrompt } from "#src/handlers/gates/external-directory-messages";
+import { normalizeHooksConfig } from "#src/hook-normalize";
 import type { PermissionCheckResult } from "#src/types";
 import {
   ALL_PATH_BEARING_TOOLS,
@@ -31,6 +32,7 @@ import {
   getDecisionEvents,
   makeCtx,
   makeHandler,
+  makeSurfaceCheck,
   makeToolCallEvent,
 } from "#test/helpers/handler-fixtures";
 
@@ -135,6 +137,149 @@ describe("external_directory path scope", () => {
     const event = makeToolCallEvent(toolName);
     const result = await handler.handleToolCall(event, makeCtx());
     expect(result).toEqual({ action: "allow" });
+  });
+});
+
+describe("external_directory hook override", () => {
+  function hookConfig(matcher: "Read" | "Bash", decision: "allow" | "ask") {
+    return normalizeHooksConfig({
+      PreToolUse: [
+        {
+          matcher,
+          hooks: [
+            {
+              type: "command",
+              command: `printf '{"hookSpecificOutput":{"permissionDecision":"${decision}"}}'`,
+            },
+          ],
+        },
+      ],
+    });
+  }
+
+  function hookContext() {
+    const ctx = makeCtx();
+    Object.assign(ctx.sessionManager, {
+      getSessionId: vi.fn().mockReturnValue("session-1"),
+    });
+    return ctx;
+  }
+
+  it("allows an outside-CWD path and denied final tool when a hook allows the call", async () => {
+    const { handler, events, session } = makeHandler({
+      session: { checkPermission: makeExtDirCheck("deny", "deny") },
+      tools: ALL_TOOLS,
+    });
+    vi.spyOn(session, "getHooks").mockReturnValue(hookConfig("Read", "allow"));
+
+    const result = await handler.handleToolCall(
+      makeToolCallEvent("read", { input: { path: EXTERNAL_PATH } }),
+      hookContext(),
+    );
+
+    expect(result).toEqual({ action: "allow" });
+    expect(findExtDirDecision(events)).toBeUndefined();
+  });
+
+  it("allows a bash outside-CWD path when a hook allows the call", async () => {
+    const { handler, events, session } = makeHandler({
+      session: { checkPermission: makeExtDirCheck("deny") },
+      tools: ALL_TOOLS,
+    });
+    vi.spyOn(session, "getHooks").mockReturnValue(hookConfig("Bash", "allow"));
+
+    const result = await handler.handleToolCall(
+      makeToolCallEvent("bash", {
+        input: { command: `cat ${EXTERNAL_PATH}` },
+      }),
+      hookContext(),
+    );
+
+    expect(result).toEqual({ action: "allow" });
+    expect(findExtDirDecision(events)).toBeUndefined();
+  });
+
+  it("keeps the tool path gate authoritative over a hook allow", async () => {
+    const { handler, events, session } = makeHandler({
+      session: {
+        checkPermission: makeSurfaceCheck(
+          {
+            path: {
+              state: "deny",
+              source: "special",
+              matchedPattern: "*",
+            },
+            external_directory: { state: "deny" },
+          },
+          { state: "allow" },
+        ),
+      },
+      tools: ALL_TOOLS,
+    });
+    vi.spyOn(session, "getHooks").mockReturnValue(hookConfig("Read", "allow"));
+
+    const result = await handler.handleToolCall(
+      makeToolCallEvent("read", { input: { path: EXTERNAL_PATH } }),
+      hookContext(),
+    );
+
+    expect(result).toMatchObject({ action: "block" });
+    expect(getDecisionEvents(events)).toContainEqual(
+      expect.objectContaining({ surface: "path", result: "deny" }),
+    );
+    expect(findExtDirDecision(events)).toBeUndefined();
+  });
+
+  it("keeps the bash path gate authoritative over a hook allow", async () => {
+    const { handler, events, session } = makeHandler({
+      session: {
+        checkPermission: makeSurfaceCheck(
+          {
+            path: {
+              state: "deny",
+              source: "special",
+              matchedPattern: "*",
+            },
+            external_directory: { state: "deny" },
+          },
+          { state: "allow" },
+        ),
+      },
+      tools: ALL_TOOLS,
+    });
+    vi.spyOn(session, "getHooks").mockReturnValue(hookConfig("Bash", "allow"));
+
+    const result = await handler.handleToolCall(
+      makeToolCallEvent("bash", {
+        input: { command: `cat ${EXTERNAL_PATH}` },
+      }),
+      hookContext(),
+    );
+
+    expect(result).toMatchObject({ action: "block" });
+    expect(getDecisionEvents(events)).toContainEqual(
+      expect.objectContaining({ surface: "path", result: "deny" }),
+    );
+    expect(findExtDirDecision(events)).toBeUndefined();
+  });
+
+  it("keeps the external-directory gate active for a hook ask", async () => {
+    const { handler, events, session } = makeHandler({
+      session: { checkPermission: makeExtDirCheck("deny") },
+      tools: ALL_TOOLS,
+    });
+    vi.spyOn(session, "getHooks").mockReturnValue(hookConfig("Read", "ask"));
+
+    const result = await handler.handleToolCall(
+      makeToolCallEvent("read", { input: { path: EXTERNAL_PATH } }),
+      hookContext(),
+    );
+
+    expect(result).toMatchObject({ action: "block" });
+    expect(findExtDirDecision(events)).toMatchObject({
+      surface: "external_directory",
+      result: "deny",
+    });
   });
 });
 

@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { normalizeHooksConfig } from "#src/hook-normalize";
-import type { HooksConfig } from "#src/hook-types";
+import type { HookPermissionMode, HooksConfig } from "#src/hook-types";
 import type {
   ShellToolsConfig,
   UnifiedPermissionConfig,
@@ -110,6 +110,15 @@ export function normalizePermissionSystemConfig(
     result.authorizerChain = raw.authorizerChain;
   }
   return result;
+}
+
+export function deriveHookPermissionMode(
+  config: PermissionSystemExtensionConfig,
+): HookPermissionMode {
+  if (config.yoloMode) {
+    return "bypassPermissions";
+  }
+  return config.allowLocalEdits ? "acceptEdits" : "default";
 }
 
 export function isYoloModeEnabled(

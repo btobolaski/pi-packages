@@ -19,10 +19,18 @@ export interface HooksConfig {
 
 // Hook I/O matches the Claude Code PreToolUse protocol.
 
+export type HookPermissionMode =
+  | "default"
+  | "plan"
+  | "acceptEdits"
+  | "auto"
+  | "dontAsk"
+  | "bypassPermissions";
+
 export interface PreToolUseHookInput {
   session_id: string;
   cwd: string;
-  permission_mode: string;
+  permission_mode: HookPermissionMode;
   hook_event_name: "PreToolUse";
   tool_name: string;
   tool_input: unknown;
@@ -54,6 +62,6 @@ export interface MergedHookDecision {
 export interface HookExecutionContext {
   session_id: string;
   cwd: string;
-  permission_mode: string;
+  permission_mode: HookPermissionMode;
   transcript_path: string;
 }

@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, test } from "vitest";
 
 import type { PermissionSystemExtensionConfig } from "#src/extension-config";
 import {
+  DEFAULT_EXTENSION_CONFIG,
+  deriveHookPermissionMode,
   detectMisplacedPermissionKeys,
   ensurePermissionSystemLogsDirectory,
   isYoloModeEnabled,
@@ -224,6 +226,31 @@ describe("normalizePermissionSystemConfig", () => {
   it("omits authorizerChain when absent", () => {
     const result = normalizePermissionSystemConfig({});
     expect("authorizerChain" in result).toBe(false);
+  });
+});
+
+describe("deriveHookPermissionMode", () => {
+  it("uses bypassPermissions when yolo mode is enabled", () => {
+    expect(
+      deriveHookPermissionMode({
+        ...DEFAULT_EXTENSION_CONFIG,
+        yoloMode: true,
+        allowLocalEdits: true,
+      }),
+    ).toBe("bypassPermissions");
+  });
+
+  it("uses acceptEdits when local edit mode is enabled", () => {
+    expect(
+      deriveHookPermissionMode({
+        ...DEFAULT_EXTENSION_CONFIG,
+        allowLocalEdits: true,
+      }),
+    ).toBe("acceptEdits");
+  });
+
+  it("uses default when no hook permission mode is enabled", () => {
+    expect(deriveHookPermissionMode(DEFAULT_EXTENSION_CONFIG)).toBe("default");
   });
 });
 

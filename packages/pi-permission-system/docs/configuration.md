@@ -188,6 +188,9 @@ Matching commands run sequentially and receive one JSON object on stdin.
 }
 ```
 
+Pi reports `default` normally, `acceptEdits` when `allowLocalEdits` is enabled, and `bypassPermissions` when `yoloMode` is enabled.
+When both runtime overrides are enabled, `bypassPermissions` takes precedence.
+
 | Hook result                              | Meaning                                                         |
 | ---------------------------------------- | --------------------------------------------------------------- |
 | Exit `0` with valid hook JSON            | Apply `permissionDecision` (`allow`, `deny`, `ask`, or `defer`) |

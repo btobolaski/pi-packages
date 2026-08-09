@@ -5,7 +5,7 @@ import type { PermissionConfigSaveContext } from "#src/config-store";
 import type { DecisionReporter } from "#src/decision-reporter";
 import type { PermissionSystemExtensionConfig } from "#src/extension-config";
 import { runPreToolUseHooks } from "#src/hook-runner";
-import type { HooksConfig } from "#src/hook-types";
+import type { HookPermissionMode, HooksConfig } from "#src/hook-types";
 import { shouldAllowLocalEdit } from "#src/local-edit";
 import type { PathNormalizer } from "#src/path-normalizer";
 import { PATH_BEARING_TOOLS } from "#src/path-surfaces";
@@ -38,6 +38,15 @@ export interface WebAccessPrompt {
     details: PromptPermissionDetails,
     domain: string,
   ): Promise<WebAccessPermissionDecision>;
+}
+
+function deriveHookPermissionMode(
+  config: PermissionSystemExtensionConfig,
+): HookPermissionMode {
+  if (config.yoloMode) {
+    return "bypassPermissions";
+  }
+  return config.allowLocalEdits ? "acceptEdits" : "default";
 }
 
 export type ToolOverrideOutcome =
@@ -228,7 +237,7 @@ export class ToolCallOverrides implements ToolCheckOverrides {
       {
         session_id: ctx.sessionManager.getSessionId(),
         cwd: ctx.cwd,
-        permission_mode: this.session.config.yoloMode ? "yolo" : "default",
+        permission_mode: deriveHookPermissionMode(this.session.config),
         transcript_path: ctx.sessionManager.getSessionDir() || "",
       },
       tcc.toolCallId,

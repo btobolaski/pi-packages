@@ -88,6 +88,52 @@ function tcc(
 const denyCheck = (): PermissionCheckResult =>
   makeCheckResult({ state: "deny", toolName: "edit", origin: "global" });
 
+const permissionModeEchoHook = normalizeHooksConfig({
+  PreToolUse: [
+    {
+      matcher: "Edit",
+      hooks: [
+        {
+          type: "command",
+          command:
+            'node -e \'let input = ""; process.stdin.setEncoding("utf8"); process.stdin.on("data", (chunk) => (input += chunk)); process.stdin.on("end", () => { const mode = JSON.parse(input).permission_mode; process.stdout.write(JSON.stringify({ hookSpecificOutput: { permissionDecision: "deny", permissionDecisionReason: mode } })); });\'',
+        },
+      ],
+    },
+  ],
+});
+
+async function readHookPermissionMode(
+  configOverrides: Partial<typeof DEFAULT_EXTENSION_CONFIG>,
+): Promise<string> {
+  const harness = makeHarness(
+    makeSession(configOverrides, permissionModeEchoHook),
+  );
+  const result = await harness.overrides.apply(
+    tcc("edit", { path: "src/a.ts" }),
+    harness.ctx,
+    denyCheck(),
+    harness.formatter,
+  );
+  if (result.action !== "block") {
+    throw new Error(`Expected hook to block, got ${result.action}`);
+  }
+  return result.reason;
+}
+
+describe("ToolCallOverrides hook permission mode", () => {
+  it.each([
+    [{}, "default"],
+    [{ allowLocalEdits: true }, "acceptEdits"],
+    [{ yoloMode: true }, "bypassPermissions"],
+    [{ allowLocalEdits: true, yoloMode: true }, "bypassPermissions"],
+  ])("maps config %j to %s", async (configOverrides, expectedMode) => {
+    await expect(readHookPermissionMode(configOverrides)).resolves.toBe(
+      expectedMode,
+    );
+  });
+});
+
 describe("ToolCallOverrides local edit behavior", () => {
   it("allows a denied edit inside cwd when allowLocalEdits is enabled", async () => {
     const session = makeSession({ allowLocalEdits: true });

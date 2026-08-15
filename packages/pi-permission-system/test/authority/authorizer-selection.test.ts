@@ -145,6 +145,20 @@ describe("AuthorizerSelection", () => {
       );
     });
 
+    it("invalidates active and queued prompts before reactivation", () => {
+      const promptQueue = new SerialInteractivePromptQueue();
+      const invalidate = vi.spyOn(promptQueue, "invalidate");
+      const selection = new AuthorizerSelection(makeDeps({ promptQueue }));
+      selection.activate(makeCtx({ cwd: "/old" }));
+
+      selection.activate(makeCtx({ cwd: "/new" }));
+
+      expect(invalidate).toHaveBeenCalledOnce();
+      expect(invalidate).toHaveBeenCalledWith(
+        "The permission session changed.",
+      );
+    });
+
     it("activate then deactivate rejects a subsequent escalate", async () => {
       const selection = new AuthorizerSelection(makeDeps());
       selection.activate(makeCtx());

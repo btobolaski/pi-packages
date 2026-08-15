@@ -1,5 +1,8 @@
 # Migration guide: legacy format → flat permission format
 
+> **Hooks-first status:** This is a historical migration for the retained policy engine.
+> The current production composition accepts flat `permission` config for compatibility and inspection but does not use it as automatic tool-call authority.
+
 This guide covers migration from the pre-#66 config format to the flat `permission` format introduced in #66.
 
 ## Summary of changes

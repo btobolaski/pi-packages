@@ -2,7 +2,18 @@
 
 This document describes the internal design of the permission system, informed by [OpenCode's permission model](https://opencode.ai/docs/permissions/).
 
-## Design principles
+## Production Authority Overlay
+
+Production tool calls use a hooks-first overlay around the retained upstream engine.
+`PreToolUseHookGate` runs before `ToolCallGatePipeline` and terminates on hook `allow` or `deny`.
+Hook `ask` and `defer` enter the pipeline in `dialog-fallback` mode, which evaluates only the final tool descriptor.
+`DialogFallbackPermissionResolver` preserves user-granted session rules and rewrites every other configured result to `ask`.
+The composition root disables yolo rewriting, config-named authorizer chains, and shell-tool aliases while retaining their implementation for compatibility.
+`SerialInteractivePromptQueue` owns FIFO prompt admission and cancels active and queued transactions on session teardown.
+
+The retained deterministic policy engine still parses config, supports unit-level inspection, and supplies normalized command and path facts, but it is not production authority.
+
+## Retained Engine Design Principles
 
 1. **Unified rule model** - one `Rule` type, one evaluation function, all surfaces.
 2. **Pure evaluation** - permission decisions are pure functions of (surface, pattern, rules).
@@ -13,7 +24,7 @@ This document describes the internal design of the permission system, informed b
    No side-channel fallbacks.
 6. **Flat config format** - the flat `permission: { ... }` object where each key is a surface.
    The config IS the ruleset in human-friendly form.
-7. **Preserve the two-phase model** - tool filtering (before_agent_start) and invocation gating (tool_call) remain separate.
+7. **Retain the two-phase engine** - tool filtering (`before_agent_start`) and invocation gating (`tool_call`) remain available for compatibility, while the production hooks-first root keeps every tool visible and gates each call.
 8. **Ask = cache miss** - "ask" is the absence of a matching rule.
    The human is the oracle.
    Their decision is a rule.
@@ -282,7 +293,7 @@ Per-tool path patterns — e.g. `"read": { "*": "allow", "*.env": "deny" }` — 
 When the pipeline calls `resolvePerToolCheck`, a present `input.path` triggers `normalizer.forPath(path)` and an `access-path` intent on the tool-name surface; the resolver unwraps it to `path-values` carrying the lexical ∪ canonical alias set before the manager evaluates the rule.
 When `input.path` is missing or empty, the pipeline falls back to a `tool` intent, which `normalizeInput` collapses to `["*"]` (surface catch-all).
 Path alias derivation (home-expansion, cwd-relative aliases) lives in `getPathPolicyValues` / `AccessPath` — not in `normalizeInput`, which no longer touches path surfaces (#504).
-`getToolPermission()` is unaffected — it always evaluates with `"*"` to determine whether to inject the tool at agent start.
+The retained resolver's `getToolPermission()` evaluates with `"*"`; the production `DialogFallbackPermissionResolver` instead returns `ask`, so it does not hide tools at agent start.
 
 The cross-cutting `path` and `external_directory` gates extract paths for **extension and MCP tools too** (#352): `describePathGate` and `describeExternalDirectoryGate` call `getToolInputPath`, which reads `input.path` for built-ins, `input.arguments.path` for MCP, and a registered `ToolAccessExtractor` (or the default `input.path` convention) for any other tool.
 The extractor registry (`src/tool-access-extractor-registry.ts`) is created once in `index.ts` and shared: its lookup side is threaded into `ToolCallGatePipeline`, and its registrar side is exposed cross-extension via `PermissionsService.registerToolAccessExtractor`.
@@ -383,13 +394,17 @@ The staged first step is the payload and the renderer seam, which fixes [#710] b
 
 ## Two-phase checking
 
+This section describes the retained full-policy engine.
+In the hooks-first production composition, `DialogFallbackPermissionResolver.getToolPermission()` always returns `ask`, so Phase 1 hides no tools.
+For Phase 2, `PreToolUseHookGate` decides hook allows and denials before `ToolCallGatePipeline` evaluates only the final tool descriptor in `dialog-fallback` mode.
+
 ### Phase 1: Tool filtering (`before_agent_start`)
 
-`shouldExposeTool` (`src/handlers/before-agent-start.ts`) calls `evaluate(toolName, "*", rules)` and exposes the tool unless the surface-level result is `deny` — "is this tool denied regardless of specific input?"
+In full-policy mode, `shouldExposeTool` (`src/handlers/before-agent-start.ts`) calls `evaluate(toolName, "*", rules)` and exposes the tool unless the surface-level result is `deny` — "is this tool denied regardless of specific input?"
 
 ### Phase 2: Invocation gating (`tool_call`)
 
-The gate pipeline (`src/handlers/gates/`) normalizes the input to `(surface, value)`, evaluates it against the composed ruleset, and acts on the result: `allow` proceeds, `deny` blocks, and `ask` elicits from the session's `Authorizer` — a persisted "session" decision appends a `Rule` to `sessionRules` so the next similar call is a cache hit.
+The retained full-policy gate pipeline (`src/handlers/gates/`) normalizes the input to `(surface, value)`, evaluates it against the composed ruleset, and acts on the result: `allow` proceeds, `deny` blocks, and `ask` elicits from the session's `Authorizer` — a persisted "session" decision appends a `Rule` to `sessionRules` so the next similar call is a cache hit.
 
 Same `evaluate()`, same ruleset.
 The only surface-specific logic is input normalization (what `surface` and `value` to look up) and pattern suggestion (what glob to offer for "session" approval).
@@ -553,7 +568,10 @@ Requester identity (`requesterCwd`, `principal`) crosses to neither: it is the s
 
 ### yolo is recorded authority
 
-yolo is not a channel and not a live concern — it is a standing authorization, and it belongs in the ruleset, not in the prompt path.
+This subsection describes the retained full-policy implementation.
+The hooks-first production root supplies `() => false` to `GateRunner`; `yoloMode` only selects the `bypassPermissions` value passed to `PreToolUse` hooks and never auto-approves a call.
+
+yolo is not a channel and not a live concern in the retained engine — it is a standing authorization, and it belongs in the ruleset, not in the prompt path.
 It is a composition-stage rewrite: when enabled, every `ask` action in the composed ruleset is rewritten to `allow`, tagged `origin: "yolo"` so the review log still distinguishes a yolo grant from a policy allow.
 
 ```typescript
@@ -562,7 +580,7 @@ const effective = yolo
   : composed;
 ```
 
-This is faithful to current behavior exactly: explicit `deny` rules are not `ask`, so they pass through untouched — yolo suppresses prompts but **preserves hard denies**.
+This is faithful to the retained full-policy behavior: explicit `deny` rules are not `ask`, so they pass through untouched — yolo suppresses prompts but **preserves hard denies**.
 It honors principle 5 (defaults are rules; no side-channel fallbacks): `evaluate()` runs pure over the rewritten ruleset, and the prompt path loses all yolo knowledge (`shouldAutoApprovePermissionState` and `canResolveAskPermissionRequest`'s yolo arm dissolve).
 
 The ruleset is the whole story for asks the ruleset produces.
@@ -590,6 +608,9 @@ Global is excluded — it is the lowest precedence, so nothing more permissive i
 The two overlays stack in order: fail-closed floors `allow`→`ask` first, then yolo (if enabled) rewrites `ask`→`allow`, so an explicit yolo opt-in still wins.
 
 ### Discriminating delegation: a model `Authorizer`
+
+This subsection documents a retained extension seam.
+The hooks-first production root supplies an empty authorizer chain, so registered links and configured `authorizerChain` names are not consulted.
 
 Nothing constrains an `Authorizer` to be deterministic.
 `LocalUserAuthorizer` is already a non-deterministic oracle — the human — and the determinism principle governs *recorded* authority (`evaluate()`), never the live-authority layer.
@@ -733,6 +754,7 @@ src/
 ├── permission-manager.ts     Scope loading + rule composition + `check(intent)` (single resolution entry point); delegates I/O to PolicyLoader; floors the composed ruleset `allow`→`ask` (origin `fail-closed`) when a non-global scope is `invalid`, and appends a fail-closed notice to `getConfigIssues`. Constraint: stays string-based — must not import `AccessPath` (the ADR 0002 string boundary, lint-guarded by `no-restricted-imports`)
 ├── permission-gate.ts        Pure deny/ask/allow gate (injected IO)
 ├── permission-resolver.ts    `ScopedPermissionResolver` interface - the single `{ resolve(intent) }` role the gate factories / runner / pipeline depend on; `PermissionResolver` concrete class holds `ScopedPermissionManager` + `SessionRules`, owns `resolve(intent)` (unwraps an `access-path` `AccessIntent` via `matchValues()` before calling `manager.check`; the concrete class also accepts a pre-fixed `path-values` intent as a passthrough — the forwarded-serving wire's producer, #597 — while the gate-facing interface stays narrow to `AccessIntent`), raw `checkPermission` (`implements SkillPermissionChecker`, no session rules), `getToolPermission`, and `getConfigIssues`
+├── dialog-fallback-permission-resolver.ts `DialogFallbackPermissionResolver` - production resolver adapter that preserves session-origin decisions, rewrites every other result to `ask`, and reports every tool as `ask` during agent preparation
 ├── decision-reporter.ts      `DecisionReporter` interface + `GateDecisionReporter` class - owns `SessionLogger` and event bus; writes review-log entries and emits decision events
 ├── decision-audit.ts         `DecisionRecorder` / `DecisionSummaryWriter` / `AuditLogger` interfaces + `DecisionAudit` class - per-session decision counters; `writeSummary` emits a `permission.session_summary` debug line on shutdown and warns on a `toolCalls != allowed + blocked + errors` invariant violation
 ├── session-approval-recorder.ts `SessionApprovalRecorder` interface - records a granted session-scoped approval into the session ruleset; implemented by `SessionRules`
@@ -759,17 +781,23 @@ src/
 │       ├── token-classification.ts Pure token classifiers: `classifyTokenAsPathCandidate` (strict: `/`, `~/`, `..`, Windows drive-letter), `classifyTokenAsRuleCandidate(token, flavor)` (broader: also dot-files, relative paths, the drive-letter backslash form, and — under the win32 flavor — a backslash-relative token), and `classifyBareTokenCandidate(token)` (prelude-only: returns any token whose shape does not rule out a path, for the resolver to probe). Constraint: policy-free — no classifier consults the ruleset (ADR 0009)
 │       ├── sync-commands.ts    `parseBashCommandsSync(command): BashCommand[] | null` — warm-parser-backed synchronous command enumeration; returns `null` in the pre-warm window so the advisory bash path falls back to whole-string matching
 │       └── program.ts         Born-ready `BashProgram` value object: `parse(command, normalizer, options?)` eagerly resolves all three slices at construction; parameter-free getters `commands()`, `externalPaths(): AccessPath[]`, `pathRuleCandidates()`. `commands()` splits the chain AND descends into command/process substitutions and subshells, tagging each nested command with its execution `context`, stripping any leading `variable_assignment` prefix, and flagging wrapper units with a `wrapperKind` so their decision floors to `ask`
+├── hook-types.ts             Claude Code-compatible hook configuration, input, permission-mode, execution-result, diagnostic, and merged-decision types
+├── hook-normalize.ts         Defensive normalization for raw `PreToolUse` matcher and command configuration
+├── hook-matcher.ts           Pi-to-Claude tool-name translation plus matcher and conditional-field evaluation
+├── hook-executor.ts          Shell-command execution from the session cwd, bounded by timeout and process-group termination; parses hook output into fail-open diagnostics
+├── hook-runner.ts            Sequential matching-command runner and deterministic deny > ask > allow > defer merge
 ├── handlers/                 Handler classes with narrow constructor injection
 │   ├── index.ts              Barrel re-exports
 │   ├── lifecycle.ts          SessionLifecycleHandler (session: `PermissionSession` + resolver + serviceLifecycle + audit); writes the decision-audit summary on `session_shutdown`
 │   ├── before-agent-start.ts AgentPrepHandler (session + resolver + toolRegistry + `warmParser: () => void`); shouldExposeTool pure helper; recomputes the active set + system-prompt override every fire; fire-and-forget `warmParser()` triggers the tree-sitter warm-up
-│   ├── permission-gate-handler.ts PermissionGateHandler (session + toolRegistry + pipeline + skillInputPipeline + runner); `handleToolCall` returns the internal total `GateOutcome`; validateRequestedTool + getEventInput + extractSkillNameFromInput pure helpers
+│   ├── permission-gate-handler.ts PermissionGateHandler (session + toolRegistry + PreToolUse evaluator + pipeline + skillInputPipeline + runner); `handleToolCall` gives terminal hook outcomes precedence, then returns the pipeline's internal total `GateOutcome`; validateRequestedTool + getEventInput + extractSkillNameFromInput pure helpers
 │   ├── tool-call-boundary.ts `createFailClosedToolCall(gate, reporter, audit, tracer)` - the only `pi.on("tool_call")` target and sole `GateOutcome` → SDK-shape translator; owns the `try/catch → block` (the SDK's `emitToolCall` does not catch a throwing handler), writes a `gate_error` review entry on throw, and emits a `debugLog`-gated `permission.decision` trace per call
 │   └── gates/               Pure descriptor factories + runner
 │       ├── types.ts          GateOutcome, ToolCallContext
 │       ├── descriptor.ts     GateDescriptor (with DenialContext), GateBypass, GateResult types
+│       ├── pre-tool-use-hook-gate.ts `PreToolUseHookGate` - production first gate; runs the configured hooks with session context, records abnormal execution diagnostics, terminates on allow/deny, and sends ask/defer to dialog fallback
 │       ├── runner.ts         GateRunner class — constructed with `ScopedPermissionResolver`, `SessionApprovalRecorder`, `AskEscalator` (the single-method ask-escalation seam), `DecisionReporter`, plus a live `isYoloEnabled` reader (read per gate; the sole place a post-resolution ask is reconciled with yolo); `run(gate, agentName, toolCallId)` dispatches null / bypass / descriptor
-│       ├── tool-call-gate-pipeline.ts `ToolCallGateInputs` interface (`getActiveSkillEntries`, `getInfrastructureReadDirs`, `getToolPreviewLimits`, `getPathNormalizer`, `getShellToolAliases`) + `ToolCallGatePipeline` class — constructed with `ScopedPermissionResolver` + `ToolCallGateInputs`; owns bash-command extraction + the single `BashProgram.parse`, `ToolPreviewFormatter` construction, the infra-dir list, the six gate producers, and the run loop; `evaluate(tcc, runner)` returns the first block outcome or allow
+│       ├── tool-call-gate-pipeline.ts `ToolCallGateInputs` interface (`getActiveSkillEntries`, `getInfrastructureReadDirs`, `getToolPreviewLimits`, `getPathNormalizer`, `getShellToolAliases`) + `ToolCallGatePipeline` class — constructed with `ScopedPermissionResolver` + `ToolCallGateInputs`; full-policy mode owns bash-command extraction and six ordered producers, while production `dialog-fallback` mode runs only the final tool descriptor; `evaluate(tcc, runner)` returns the first block outcome or allow
 │       ├── skill-input-gate-pipeline.ts `SkillInputGateInputs` + `GateNotifier` interfaces + `SkillInputGatePipeline` class — owns the raw `checkPermission` pre-check, deny notify, `describeSkillInputGate` descriptor, request-id mint, and `runner.run`; `evaluate(skillName, agentName, notifier, runner)` makes the `input` path symmetric with the `tool_call` path
 │       ├── helpers.ts        deriveDecisionValue, deriveResolution, buildDecisionEvent, resolveYoloGrant (the standing yolo grant covering a resolved check — a ruleset-rewritten allow or, under yolo, a residual ask)
 │       ├── skill-read.ts     describeSkillReadGate - pure descriptor factory
@@ -786,7 +814,7 @@ src/
 │       ├── tool.ts           describeToolGate - pure descriptor factory for the per-tool gate; for path-bearing built-in tools the pipeline builds an `AccessPath` and emits an `access-path` intent on the tool-name surface so per-tool rules match lexical ∪ canonical, and the session-approval value derives from `accessPath.value()`; bash/MCP/extension tools keep the raw `tool` intent
 │       └── index.ts          Barrel re-exports
 │
-├── index.ts                  Extension factory - event wiring, collaborator construction (established injection-bag wiring kept inline per the anti-procedure-splitting rule)
+├── index.ts                  Extension factory and hooks-first composition root - event wiring, hook gate, dialog resolver, dormant full-policy features, prompt queue, and collaborator construction
 ├── bash-advisory-check.ts    `resolveBashAdvisoryCheck(command, agentName, resolver)` — routes an advisory `bash` query through the gate's shared `resolveBashCommandCheck` over `parseBashCommandsSync` units, falling back to a whole-string `tool` intent in the pre-warm window; kept out of `access-intent/` to avoid a domain→handler import
 ├── permissions-service.ts    `LocalPermissionsService` class - in-process implementation of `PermissionsService`; injected with narrow collaborator interfaces (a `resolve` + `getToolPermission` resolver view, a `getPathNormalizer` session view, the formatter/access-extractor/authorizer registrars); routes path-surface queries through the resolver as an `access-path` intent so external policy queries match lexical ∪ canonical like the gates, and bash queries through `resolveBashAdvisoryCheck` for decomposed fidelity
 ├── service-lifecycle.ts      `ServiceLifecycle` interface + `PermissionServiceLifecycle` class — owns the process-global service publish (child-gated), ready emit, and session teardown ordering
@@ -829,6 +857,7 @@ src/
 │   ├── authorizer-registry.ts `AuthorizerRegistry` (+ `AuthorizerLookup`/`AuthorizerRegistrar` ISP interfaces) - name → link `authorize` map mirroring `ToolAccessExtractorRegistry`; one instance in `index.ts`, exposed cross-extension via `PermissionsService.registerAuthorizer`; throw-on-duplicate, identity-guarded disposer
 │   ├── delegation-envelope.ts `encloseInDelegationEnvelope(authorize)` + `DELEGATION_EXCLUDED_SURFACES` - the bounded-delegation checkpoint (ADR 0007 §5): caps a link's `allow` on an excluded surface (`external_directory`/`path`, or an undetermined surface, fail-safe) to `defer`; deny/defer pass through
 │   ├── local-user-authorizer.ts `LocalUserAuthorizer` class - `TerminalAuthorizer` for a session with UI and the single `permissions:ui_prompt` emit site: renders a forwarded ask's provenance as a non-degraded broadcast + `(Subagent)` title, then dispatches to the inline keybind dialog (TUI) or the `select`/`input` fallback
+│   ├── interactive-prompt-queue.ts `SerialInteractivePromptQueue` - FIFO admission for complete prompt transactions; invalidation aborts the active prompt and rejects queued work on session teardown
 │   ├── permission-dialog.ts   Dialog option semantics + `requestPermissionDecisionFromUi` (`select`/`input` fallback); the mode dispatch lives in `permission-prompt-component.ts`
 │   ├── permission-prompt-decision.ts Pure decision model (`reducePrompt` + `PromptModelConfig`/`PromptViewState`) for the inline keybind dialog - hotkey arming (double-press), step transitions, reason validation; no SDK/TUI imports
 │   ├── permission-prompt-component.ts Inline `ctx.ui.custom<PermissionPromptDecision>` keybind dialog (TUI) driven by the decision model + the `requestPermissionDecision` mode dispatcher (tui → inline, else fallback); forwards Pi's `app.tools.expand` action in the decision/scope steps only, never during reason entry

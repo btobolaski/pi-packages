@@ -1,5 +1,8 @@
 # Migration guide: project-trust gating
 
+> **Hooks-first status:** Project-trust gating remains active for project-scoped hook configuration.
+> References below to policy rules and yolo auto-approval describe the retained full-policy runtime; today trust prevents an untrusted project from replacing global hooks or hook permission modes.
+
 Starting with the release that closes #644, the permission-system loads project-scoped configuration only after Pi reports the project as **trusted** (`ctx.isProjectTrusted()`).
 This is a **breaking change** in how config is loaded in an untrusted directory.
 
@@ -20,7 +23,7 @@ This aligns the extension with Pi's own trust model, which already withholds pro
 
 Pi resolves the trust decision (including any `defaultProjectTrust` setting) before `session_start`, so the guard sees the effective decision from the first tool call.
 If you grant trust after the session starts, Pi fires `resources_discover` with `reason: "reload"`, and the extension re-reads trust and loads the project **policy** at that point.
-Project **runtime** config (e.g. `yoloMode`) is re-read on the next session start.
+The next `before_agent_start` also refreshes project runtime configuration, so project hooks and hook permission modes take effect on the next agent turn without waiting for another session.
 
 ## What you need to do
 

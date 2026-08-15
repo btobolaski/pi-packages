@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { executePreToolUseHook } from "#src/hook-executor";
@@ -35,6 +38,7 @@ describe("executePreToolUseHook", () => {
     );
 
     expect(result.decision).toBe("allow");
+    expect(result.status).toBe("decision");
     expect(result.reason).toBe("ok");
     expect(result.exitCode).toBe(0);
     expect(result.timedOut).toBe(false);
@@ -50,6 +54,7 @@ describe("executePreToolUseHook", () => {
     );
 
     expect(result.decision).toBe("deny");
+    expect(result.status).toBe("decision");
     expect(result.reason).toBe("policy violation");
     expect(result.exitCode).toBe(2);
   });
@@ -71,6 +76,7 @@ describe("executePreToolUseHook", () => {
     );
 
     expect(result.decision).toBe("defer");
+    expect(result.status).toBe("empty_output");
     expect(result.exitCode).toBe(0);
   });
 
@@ -81,6 +87,7 @@ describe("executePreToolUseHook", () => {
     );
 
     expect(result.decision).toBe("defer");
+    expect(result.status).toBe("invalid_output");
   });
 
   it("defers when the JSON lacks a valid permissionDecision", async () => {
@@ -94,6 +101,7 @@ describe("executePreToolUseHook", () => {
     );
 
     expect(result.decision).toBe("defer");
+    expect(result.status).toBe("invalid_output");
   });
 
   it("defers for arbitrary non-zero exit codes", async () => {
@@ -103,6 +111,7 @@ describe("executePreToolUseHook", () => {
     );
 
     expect(result.decision).toBe("defer");
+    expect(result.status).toBe("nonzero_exit");
     expect(result.exitCode).toBe(3);
   });
 
@@ -113,7 +122,31 @@ describe("executePreToolUseHook", () => {
     );
 
     expect(result.decision).toBe("defer");
+    expect(result.status).toBe("timeout");
     expect(result.timedOut).toBe(true);
+  });
+
+  it("force-kills a timed-out hook that ignores SIGTERM", async () => {
+    const testDir = mkdtempSync(join(tmpdir(), "pi-hook-timeout-"));
+    const pidPath = join(testDir, "pid");
+
+    try {
+      await executePreToolUseHook(
+        {
+          type: "command",
+          command: `trap '' TERM; printf '%s' "$$" > '${pidPath}'; while :; do sleep 1; done`,
+          timeout: 0.05,
+        },
+        makeInput(),
+        true,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      const pid = Number(readFileSync(pidPath, "utf8"));
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      rmSync(testDir, { recursive: true, force: true });
+    }
   });
 
   it("preserves updatedInput and additionalContext from the parsed output", async () => {
@@ -136,6 +169,32 @@ describe("executePreToolUseHook", () => {
     expect(result.decision).toBe("allow");
     expect(result.updatedInput).toEqual({ command: "ls -la" });
     expect(result.additionalContext).toBe("post-processed");
+  });
+
+  it("runs relative hook commands from the session cwd", async () => {
+    const result = await executePreToolUseHook(
+      {
+        type: "command",
+        command:
+          'test "$PWD" = "/tmp" && printf \'{"hookSpecificOutput":{"permissionDecision":"allow"}}\'',
+      },
+      makeInput({ cwd: "/tmp" }),
+    );
+
+    expect(result.decision).toBe("allow");
+  });
+
+  it("omits the transcript path when no session file exists", async () => {
+    const result = await executePreToolUseHook(
+      {
+        type: "command",
+        command:
+          'grep -q \'"transcript_path"\' && exit 2; printf \'{"hookSpecificOutput":{"permissionDecision":"allow"}}\'',
+      },
+      makeInput({ transcript_path: undefined }),
+    );
+
+    expect(result.decision).toBe("allow");
   });
 
   it("forwards the JSON payload on stdin so hooks can inspect it", async () => {

@@ -107,6 +107,8 @@ export class PermissionResolver
     );
   }
 
+  // Retained for direct inspection of the dormant deterministic engine.
+  // fallow-ignore-next-line unused-class-member
   getToolPermission(toolName: string, agentName?: string): PermissionState {
     return this.permissionManager.getToolPermission(toolName, agentName);
   }

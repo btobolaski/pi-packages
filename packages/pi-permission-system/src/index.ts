@@ -33,7 +33,10 @@ import {
 import { PreToolUseHookGate } from "./handlers/gates/pre-tool-use-hook-gate";
 import { GateRunner } from "./handlers/gates/runner";
 import { SkillInputGatePipeline } from "./handlers/gates/skill-input-gate-pipeline";
-import { ToolCallGatePipeline } from "./handlers/gates/tool-call-gate-pipeline";
+import {
+  type ToolCallGateInputs,
+  ToolCallGatePipeline,
+} from "./handlers/gates/tool-call-gate-pipeline";
 import { createFailClosedToolCall } from "./handlers/tool-call-boundary";
 import { pathFlavorForPlatform } from "./path/path-flavor";
 import { PermissionManager } from "./permission-manager";
@@ -51,11 +54,11 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   // getPackageDir() is Pi's own install dir; auto-allow it for read-only tools
   // so the agent can read Pi's bundled docs/examples regardless of layout.
   const paths = computeExtensionPaths(agentDir, getPackageDir());
-  // The single process.platform read for the whole extension, resolved once
-  // into the path-language flavor that every consumer shares (the session's
-  // PathNormalizer, rule evaluation, and subagent detection). Interior modules
+  // The composition root owns process.platform reads and injects their
+  // products. This path-language flavor is shared by the session's
+  // PathNormalizer, rule evaluation, and subagent detection. Interior modules
   // must not read process.platform (enforced by the eslint guard scoped to
-  // src/) and never re-derive the win32 flavor — they receive this product.
+  // src/) or re-derive platform behavior.
   const hostFlavor = pathFlavorForPlatform(process.platform);
   const sessionRules = new SessionRules();
   const subagentRegistry = getSubagentSessionRegistry();
@@ -127,27 +130,24 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     // session cwd). A thunk because `permissionsService` is constructed below;
     // it resolves at session_start (activate), well after assignment.
     getPermissionQuery: () => permissionsService,
-    // Same registry instance the registerAuthorizer service surface writes to,
-    // resolved in config order at activation.
+    // Retained for service compatibility; no registered link is activated in
+    // the hooks-first runtime.
     authorizerRegistry,
     getAuthorizerChain: () => [],
   });
 
-  // Resolver composes the manager + session ruleset and owns the
-  // access-path → path-values unwrap. Constructed here (before `session`) so
-  // the forwarded-request server's ServingPolicy can resolve against it; the
-  // service and gates below share this one instance.
+  // The retained resolver still owns access-path normalization and session
+  // rule composition. Production consumers use the dialog adapter so only a
+  // user session grant can resolve without a prompt.
   const policyResolver = new PermissionResolver(
     permissionManager,
     sessionRules,
   );
   const dialogResolver = new DialogFallbackPermissionResolver(policyResolver);
 
-  // Serving a forwarded request is resolution: resolve the child-fixed
-  // ForwardedAccessIntent (ADR 0008) directly against the serving node's
-  // composed ruleset, agent-scoped to the requester (§3) — the match values
-  // are used as fixed by the child, never re-derived through this session's
-  // PathNormalizer/cwd (#597).
+  // Preserve the child-fixed access facts while forcing non-session outcomes
+  // to the serving node's dialog. Match values are never re-derived through
+  // this session's PathNormalizer/cwd (#597).
   const servingPolicy: ServingPolicy = {
     resolve: (intent) =>
       dialogResolver.resolve(
@@ -261,9 +261,18 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     reporter,
     () => false,
   );
+  const dialogToolCallInputs: ToolCallGateInputs = {
+    getActiveSkillEntries: () => session.getActiveSkillEntries(),
+    getInfrastructureReadDirs: () => session.getInfrastructureReadDirs(),
+    getToolPreviewLimits: () => session.getToolPreviewLimits(),
+    getPathNormalizer: () => session.getPathNormalizer(),
+    // Shell aliases remain implemented upstream but are intentionally dormant
+    // in the hooks-first runtime.
+    getShellToolAliases: () => undefined,
+  };
   const toolCallGatePipeline = new ToolCallGatePipeline(
     dialogResolver,
-    session,
+    dialogToolCallInputs,
     formatterRegistry,
     accessExtractorRegistry,
     "dialog-fallback",
@@ -272,6 +281,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   const preToolUseHooks = new PreToolUseHookGate(
     () => configStore.current(),
     reporter,
+    process.platform !== "win32",
   );
   const gates = new PermissionGateHandler(
     session,

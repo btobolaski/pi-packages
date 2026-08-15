@@ -37,8 +37,9 @@ export class GateRunner {
     private readonly prompter: AskEscalator,
     private readonly reporter: DecisionReporter,
     /**
-     * Live yolo reader, read per gate so a mid-session config change takes
-     * effect — the same closure `PermissionManager` receives.
+     * Composition-selected yolo reader. Full-policy consumers may provide a
+     * live config closure; the hooks-first production root always returns
+     * `false`, leaving automatic approval dormant.
      */
     private readonly isYoloEnabled: () => boolean,
   ) {}

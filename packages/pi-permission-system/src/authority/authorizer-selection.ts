@@ -75,6 +75,9 @@ export class AuthorizerSelection
    * activation, so link resolution is deferred to the session's first ask.
    */
   activate(ctx: ExtensionContext): void {
+    if (this.authority !== null) {
+      this.deps.promptQueue.invalidate("The permission session changed.");
+    }
     this.authority = selectAuthorizer(ctx, this.deps);
   }
 

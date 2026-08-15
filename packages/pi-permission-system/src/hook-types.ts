@@ -21,10 +21,7 @@ export interface HooksConfig {
 
 export type HookPermissionMode =
   | "default"
-  | "plan"
   | "acceptEdits"
-  | "auto"
-  | "dontAsk"
   | "bypassPermissions";
 
 export interface PreToolUseHookInput {
@@ -35,15 +32,24 @@ export interface PreToolUseHookInput {
   tool_name: string;
   tool_input: unknown;
   tool_use_id: string;
-  transcript_path: string;
+  transcript_path?: string;
 }
 
 export type HookPermissionDecision = "allow" | "deny" | "ask" | "defer";
 
 // Internal results emitted by the hook executor / runner.
 
+export type HookExecutionStatus =
+  | "decision"
+  | "empty_output"
+  | "invalid_output"
+  | "nonzero_exit"
+  | "spawn_error"
+  | "timeout";
+
 export interface PreToolUseHookResult {
   decision: HookPermissionDecision;
+  status: HookExecutionStatus;
   reason?: string;
   updatedInput?: unknown;
   additionalContext?: string;
@@ -52,9 +58,18 @@ export interface PreToolUseHookResult {
   timedOut: boolean;
 }
 
+export interface HookExecutionDiagnostic {
+  decision: HookPermissionDecision;
+  status: HookExecutionStatus;
+  exitCode: number | null;
+  timedOut: boolean;
+  hasStderr: boolean;
+}
+
 export interface MergedHookDecision {
   decision: HookPermissionDecision;
   reasons: string[];
+  diagnostics: HookExecutionDiagnostic[];
   updatedInput?: unknown;
   additionalContext?: string;
 }
@@ -63,5 +78,6 @@ export interface HookExecutionContext {
   session_id: string;
   cwd: string;
   permission_mode: HookPermissionMode;
-  transcript_path: string;
+  transcript_path?: string;
+  useProcessGroup: boolean;
 }

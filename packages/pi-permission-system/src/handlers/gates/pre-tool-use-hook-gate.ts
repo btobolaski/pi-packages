@@ -31,6 +31,7 @@ export class PreToolUseHookGate implements PreToolUseHookEvaluator {
   constructor(
     private readonly getConfig: () => PermissionSystemExtensionConfig,
     private readonly reporter: DecisionReporter,
+    private readonly useProcessGroup: boolean,
     private readonly runHooks: PreToolUseHookRunner = runPreToolUseHooks,
   ) {}
 
@@ -52,7 +53,8 @@ export class PreToolUseHookGate implements PreToolUseHookEvaluator {
         session_id: ctx.sessionManager.getSessionId(),
         cwd: ctx.cwd,
         permission_mode: deriveHookPermissionMode(config),
-        transcript_path: ctx.sessionManager.getSessionDir() || "",
+        transcript_path: ctx.sessionManager.getSessionFile(),
+        useProcessGroup: this.useProcessGroup,
       },
       tcc.toolCallId,
     );
@@ -64,6 +66,16 @@ export class PreToolUseHookGate implements PreToolUseHookEvaluator {
     tcc: ToolCallContext,
     decision: MergedHookDecision,
   ): PreToolUseHookGateOutcome {
+    const diagnostics = decision.diagnostics.filter(
+      (diagnostic) => diagnostic.status !== "decision",
+    );
+    if (diagnostics.length > 0) {
+      this.reporter.writeReviewLog("permission_request.hook_diagnostic", {
+        ...this.reviewDetails(tcc, decision),
+        diagnostics,
+      });
+    }
+
     switch (decision.decision) {
       case "allow":
         this.report(tcc, decision, "allow", "hook_approved");

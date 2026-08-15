@@ -99,8 +99,8 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
    *
    * If `ctx` is provided, uses it to derive the cwd and sync UI status.
    * When `projectTrusted` is `false`, the project scope is withheld so an
-   * untrusted repository's runtime config (`yoloMode`, `permissionReviewLog`,
-   * …) cannot loosen the operator's global config (#644).
+   * untrusted repository's hooks and runtime config cannot replace the
+   * operator's global hook authority or presentation settings (#644).
    */
   refresh(ctx: ExtensionContext | undefined, projectTrusted: boolean): void {
     const cwd = ctx?.cwd ?? null;
@@ -157,6 +157,7 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       permissionReviewLog: normalized.permissionReviewLog,
       yoloMode: normalized.yoloMode,
       allowLocalEdits: normalized.allowLocalEdits,
+      doublePressToConfirm: normalized.doublePressToConfirm,
     };
 
     let tmpPath: string | null = null;

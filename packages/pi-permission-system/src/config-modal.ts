@@ -71,7 +71,7 @@ function formatRulesSummary(rules: Ruleset): string {
       return `${key}=${r.action} (${r.origin})`;
     })
     .join(", ");
-  return `\n  rules: ${formatted}`;
+  return `\n  compatibility rules (not enforced): ${formatted}`;
 }
 
 function summarizeConfig(
@@ -94,9 +94,9 @@ function buildSettingItems(
   return [
     {
       id: "yoloMode",
-      label: "YOLO mode",
+      label: "Hook bypass mode",
       description:
-        "Auto-approve ask-state permission checks, including subagent approval forwarding",
+        "Pass bypassPermissions as the PreToolUse hook permission mode",
       currentValue: toOnOff(config.yoloMode),
       values: ON_OFF,
     },
@@ -246,7 +246,18 @@ function handleArgs(
   }
 
   if (normalized === "reset") {
-    controller.config.save(cloneDefaultConfig(), ctx);
+    const defaults = cloneDefaultConfig();
+    controller.config.save(
+      {
+        ...controller.config.current(),
+        debugLog: defaults.debugLog,
+        permissionReviewLog: defaults.permissionReviewLog,
+        yoloMode: defaults.yoloMode,
+        allowLocalEdits: defaults.allowLocalEdits,
+        doublePressToConfirm: defaults.doublePressToConfirm,
+      },
+      ctx,
+    );
     ctx.ui.notify("Permission system settings reset to defaults.", "info");
     return true;
   }
@@ -266,7 +277,7 @@ export function registerPermissionSystemCommand(
 ): void {
   pi.registerCommand("permission-system", {
     description:
-      "Configure pi-permission-system logging and yolo-mode behavior",
+      "Configure pi-permission-system hook modes, dialogs, and logging",
     getArgumentCompletions,
     handler: async (args, ctx) => {
       if (handleArgs(args, ctx, controller)) {

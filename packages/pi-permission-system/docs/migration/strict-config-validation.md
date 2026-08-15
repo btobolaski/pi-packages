@@ -1,5 +1,8 @@
 # Migration guide: strict config validation
 
+> **Hooks-first status:** Strict validation and fail-closed scope loading remain active.
+> Policy, shell-tool, and authorizer-chain examples below describe compatibility fields; current automatic authority comes only from `PreToolUse` hooks.
+
 Starting with the release that closes #547, the permission-system config loader validates each config file against a JSON Schema derived from a zod source of truth.
 This is a **breaking change** in how malformed config is handled.
 

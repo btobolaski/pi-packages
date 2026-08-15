@@ -137,6 +137,7 @@ function makeBaseCtx(
       getEntries: (): unknown[] => [],
       getSessionId: (): string => sessionId,
       getSessionDir: (): string => cwd,
+      getSessionFile: (): undefined => undefined,
     },
     ui: {
       notify: (): void => {},
@@ -158,11 +159,18 @@ function makeChildCtx(cwd: string, sessionId: string): unknown {
  * approves every prompt. The ask-prompt message (which embeds the tool-input
  * preview) is the first line of the select title.
  */
-function makeUiCtx(cwd: string, capturedTitles: string[]): { ctx: unknown } {
+function makeUiCtx(
+  cwd: string,
+  capturedTitles: string[],
+  selectionIndex = 0,
+): { ctx: unknown } {
   const ctx = makeBaseCtx(cwd, "ui-session", {
-    select: async (title: string): Promise<string | undefined> => {
+    select: async (
+      title: string,
+      options: string[],
+    ): Promise<string | undefined> => {
       capturedTitles.push(title);
-      return "Yes";
+      return options[selectionIndex];
     },
   });
   return { ctx };
@@ -463,20 +471,19 @@ describe("hooks-first tool authority", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("shows one dialog when the hook defers despite a configured allow", async () => {
+  it("keeps configured shell-tool aliases dormant in dialog fallback", async () => {
     writeGlobalConfig({
-      permission: { demo: "allow" },
-      hooks: {
-        PreToolUse: [
-          {
-            matcher: "demo",
-            hooks: [{ type: "command", command: "exit 0" }],
-          },
-        ],
+      shellTools: {
+        exec_command: { commandArgument: "cmd" },
       },
     });
-    const cwd = mkdtempSync(join(tmpdir(), "pi-perm-hook-defer-"));
-    const pi = makeFakePi({ toolNames: ["demo"] });
+    const cwd = mkdtempSync(join(tmpdir(), "pi-perm-shell-alias-"));
+    const events = createEventBus();
+    const promptSurfaces: unknown[] = [];
+    events.on("permissions:ui_prompt", (payload: unknown) => {
+      promptSurfaces.push((payload as { surface?: unknown }).surface);
+    });
+    const pi = makeFakePi({ events, toolNames: ["exec_command"] });
     piPermissionSystemExtension(pi as unknown as ExtensionAPI);
     const prompts: string[] = [];
     const { ctx } = makeUiCtx(cwd, prompts);
@@ -484,12 +491,60 @@ describe("hooks-first tool authority", () => {
 
     const result = (await pi.fire(
       "tool_call",
-      { toolName: "demo", toolCallId: "hook-defer", input: {} },
+      {
+        toolName: "exec_command",
+        toolCallId: "shell-alias-dormant",
+        input: { cmd: "git status" },
+      },
       ctx,
     )) as { block?: true };
 
     expect(result.block).toBeUndefined();
     expect(prompts).toHaveLength(1);
+    expect(promptSurfaces).toEqual(["exec_command"]);
+    rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("reuses a session approval after a deferring hook runs again", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "pi-perm-hook-defer-"));
+    const markerPath = join(cwd, "hook-runs");
+    writeGlobalConfig({
+      permission: { demo: "allow" },
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: "demo",
+            hooks: [
+              {
+                type: "command",
+                command: `printf x >> '${markerPath}'`,
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const pi = makeFakePi({ toolNames: ["demo"] });
+    piPermissionSystemExtension(pi as unknown as ExtensionAPI);
+    const prompts: string[] = [];
+    const { ctx } = makeUiCtx(cwd, prompts, 1);
+    await fireSessionStart(pi, ctx);
+
+    const first = (await pi.fire(
+      "tool_call",
+      { toolName: "demo", toolCallId: "hook-defer-1", input: {} },
+      ctx,
+    )) as { block?: true };
+    const second = (await pi.fire(
+      "tool_call",
+      { toolName: "demo", toolCallId: "hook-defer-2", input: {} },
+      ctx,
+    )) as { block?: true };
+
+    expect(first.block).toBeUndefined();
+    expect(second.block).toBeUndefined();
+    expect(prompts).toHaveLength(1);
+    expect(readFileSync(markerPath, "utf8")).toBe("xx");
     rmSync(cwd, { recursive: true, force: true });
   });
 });
@@ -1055,78 +1110,26 @@ describe("forwarded grant-scope selection round-trip", () => {
     });
   }
 
-  it("records a whole-session grant on the serving node so later forwards and the parent's own action resolve without a second prompt", async () => {
+  it.each([
+    {
+      scope: "whole" as const,
+      title:
+        "reuses a whole-session grant for later forwards and the parent's own action",
+      parentPromptsAgain: false,
+    },
+    {
+      scope: "subagent" as const,
+      title:
+        "contains a subagent grant so the parent's own action prompts again",
+      parentPromptsAgain: true,
+    },
+  ])("$title", async ({ scope, parentPromptsAgain }) => {
     writeGlobalConfig({ permission: { "*": "allow", demo: "ask" } });
 
     const parentCwd = mkdtempSync(join(tmpdir(), "pi-perm-parent-"));
     const childCwd = mkdtempSync(join(tmpdir(), "pi-perm-child-"));
-    const parentSessionId = "parent-whole-1";
-    const childSessionId = "child-whole-1";
-    const selectLog: string[][] = [];
-
-    const parentBus = createEventBus();
-    const parentPi = makeFakePi({ events: parentBus, toolNames: ["demo"] });
-    piPermissionSystemExtension(parentPi as unknown as ExtensionAPI);
-    const childPi = makeFakePi({
-      events: createEventBus(),
-      toolNames: ["demo"],
-    });
-    piPermissionSystemExtension(childPi as unknown as ExtensionAPI);
-
-    // The parent starts serving (its poll drains the inbox using the UI ctx).
-    const parentCtx = makeServingCtx(
-      parentCwd,
-      parentSessionId,
-      selectLog,
-      "whole",
-    );
-    await fireSessionStart(parentPi, parentCtx);
-    parentBus.emit(SUBAGENT_CHILD_SESSION_CREATED, {
-      sessionId: childSessionId,
-      parentSessionId,
-    });
-
-    // 1. First child `demo` forwards; the human grants the whole session.
-    const firstResult = (await childPi.fire(
-      "tool_call",
-      { toolName: "demo", toolCallId: "demo-1", input: {} },
-      makeChildCtx(childCwd, childSessionId),
-    )) as { block?: true };
-    expect(firstResult.block).toBeUndefined();
-    // One serve = main dialog + scope dialog.
-    expect(selectLog).toHaveLength(2);
-
-    // 2. A second child `demo` re-forwards and the serving node auto-approves
-    // from its recorded whole-session grant — no new human prompt.
-    const secondResult = (await childPi.fire(
-      "tool_call",
-      { toolName: "demo", toolCallId: "demo-2", input: {} },
-      makeChildCtx(childCwd, childSessionId),
-    )) as { block?: true };
-    expect(secondResult.block).toBeUndefined();
-    expect(selectLog).toHaveLength(2);
-
-    // 3. The parent's own `demo` is session-approved by the same grant.
-    const parentResult = (await parentPi.fire(
-      "tool_call",
-      { toolName: "demo", toolCallId: "demo-parent", input: {} },
-      parentCtx,
-    )) as { block?: true };
-    expect(parentResult.block).toBeUndefined();
-    expect(selectLog).toHaveLength(2);
-
-    await parentPi.fire("session_shutdown");
-    rmSync(parentCwd, { recursive: true, force: true });
-    rmSync(childCwd, { recursive: true, force: true });
-  });
-
-  it("contains a subagent-only grant to the requesting child so the parent's own action still prompts", async () => {
-    writeGlobalConfig({ permission: { "*": "allow", demo: "ask" } });
-
-    const parentCwd = mkdtempSync(join(tmpdir(), "pi-perm-parent-"));
-    const childCwd = mkdtempSync(join(tmpdir(), "pi-perm-child-"));
-    const parentSessionId = "parent-sub-1";
-    const childSessionId = "child-sub-1";
+    const parentSessionId = `parent-${scope}-1`;
+    const childSessionId = `child-${scope}-1`;
     const selectLog: string[][] = [];
 
     const parentBus = createEventBus();
@@ -1142,7 +1145,7 @@ describe("forwarded grant-scope selection round-trip", () => {
       parentCwd,
       parentSessionId,
       selectLog,
-      "subagent",
+      scope,
     );
     await fireSessionStart(parentPi, parentCtx);
     parentBus.emit(SUBAGENT_CHILD_SESSION_CREATED, {
@@ -1150,7 +1153,6 @@ describe("forwarded grant-scope selection round-trip", () => {
       parentSessionId,
     });
 
-    // 1. First child `demo` forwards; the human grants this subagent only.
     const firstResult = (await childPi.fire(
       "tool_call",
       { toolName: "demo", toolCallId: "demo-1", input: {} },
@@ -1159,8 +1161,6 @@ describe("forwarded grant-scope selection round-trip", () => {
     expect(firstResult.block).toBeUndefined();
     expect(selectLog).toHaveLength(2);
 
-    // 2. The child recorded the grant locally: its next `demo` resolves as a
-    // session approval with no forward, so the serving node is not consulted.
     const secondResult = (await childPi.fire(
       "tool_call",
       { toolName: "demo", toolCallId: "demo-2", input: {} },
@@ -1169,14 +1169,17 @@ describe("forwarded grant-scope selection round-trip", () => {
     expect(secondResult.block).toBeUndefined();
     expect(selectLog).toHaveLength(2);
 
-    // 3. The parent holds no grant, so its own `demo` prompts again.
     const parentResult = (await parentPi.fire(
       "tool_call",
       { toolName: "demo", toolCallId: "demo-parent", input: {} },
       parentCtx,
     )) as { block?: true };
     expect(parentResult.block).toBeUndefined();
-    expect(selectLog.length).toBeGreaterThan(2);
+    if (parentPromptsAgain) {
+      expect(selectLog.length).toBeGreaterThan(2);
+    } else {
+      expect(selectLog).toHaveLength(2);
+    }
 
     await parentPi.fire("session_shutdown");
     rmSync(parentCwd, { recursive: true, force: true });

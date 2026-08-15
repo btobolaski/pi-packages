@@ -1,5 +1,8 @@
 # OpenCode Compatibility
 
+> **Historical compatibility reference:** The inherited flat policy engine remains in the source tree, but production tool calls use hooks and the dialog rather than this policy model.
+> The comparisons below describe the retained engine and should not be used to configure automatic authority.
+
 This extension's flat permission format and evaluation semantics were directly inspired by [OpenCode's permission model](https://opencode.ai/docs/permissions/) (v1.1.x permission rework).
 If you are familiar with OpenCode's permission system, most concepts transfer directly — the same mental model applies.
 
@@ -32,7 +35,8 @@ The following concepts are shared between OpenCode and this extension:
 | Bash arity table              | Generates smart approval pattern suggestions (e.g., `git checkout *` not `git *`)                               |
 | Trailing wildcard optionality | `"ls *"` matches bare `"ls"` — the trailing `*` is optional                                                     |
 
-If your OpenCode config uses these features, the equivalent works in this extension with minimal translation (see [Porting Guide](#porting-an-opencode-config) below).
+The retained engine can represent these concepts, but configuring them does not grant or deny production tool calls in the hooks-first runtime.
+Use the comparison only as a policy-data reference, not as an authority migration guide.
 
 ## Where They Diverge
 
@@ -124,6 +128,9 @@ For allowlisted commands, all non-flag positional arguments are assumed to be pa
 The result is broader coverage (paths detected in any command, not just a curated list) with fewer false positives on pattern-first commands (no spurious prompts for sed regexes or grep patterns that happen to contain `/`).
 
 ## Porting an OpenCode Config
+
+The translated config below populates compatibility fields for inspection or full-policy consumers.
+It is not an authority configuration for the hooks-first production runtime; encode operative decisions in a `PreToolUse` hook instead.
 
 ### Before (OpenCode)
 

@@ -4,25 +4,30 @@
 
 # @gotgenes/pi-permission-system
 
-[![npm version](https://img.shields.io/npm/v/@gotgenes/pi-permission-system?style=flat&logo=npm&logoColor=white)](https://www.npmjs.com/package/@gotgenes/pi-permission-system) [![CI](https://img.shields.io/github/actions/workflow/status/gotgenes/pi-packages/ci.yml?style=flat&logo=github&label=CI)](https://github.com/gotgenes/pi-packages/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat)](https://opensource.org/licenses/MIT) [![TypeScript](https://img.shields.io/badge/TypeScript-6.x-3178C6?style=flat&logo=typescript&logoColor=white)](https://www.typescriptlang.org/) [![pnpm](https://img.shields.io/badge/pnpm-%3E%3D11-F69220?style=flat&logo=pnpm&logoColor=white)](https://pnpm.io/) [![Pi Package](https://img.shields.io/badge/Pi-Package-6366F1?style=flat)](https://pi.mariozechner.at/)
+Hooks-first permission extension for the [Pi](https://pi.mariozechner.at/) coding agent.
 
-Permission enforcement extension for the [Pi](https://pi.mariozechner.at/) coding agent that provides centralized, deterministic permission gates over tool, bash, MCP, skill, and special operations.
+> **Fork notice:** This package is based on [MasuRii/pi-permission-system](https://github.com/MasuRii/pi-permission-system), but its production authority model is intentionally different.
+> The inherited deterministic policy engine remains for compatibility and inspection, but it does not authorize or deny production tool calls.
 
-> **Fork notice:** This package is a full fork of [MasuRii/pi-permission-system](https://github.com/MasuRii/pi-permission-system), published to npm as `@gotgenes/pi-permission-system`.
-> It has diverged substantially from upstream in config format, internal architecture, and permission model.
+## Authority Model
 
-## What It Does
+Every registered tool call follows one path:
 
-- **Hides disallowed tools** before the agent starts — no wasted turns probing for blocked tools
-- **Enforces allow / ask / deny** at tool-call time with UI confirmation dialogs
-- **Controls bash commands** with wildcard pattern matching (`git *: ask`, `rm -rf *: deny`)
-- **Gates MCP and skill access** at server, tool, and skill-name granularity
-- **Protects sensitive file patterns** — cross-cutting `path` rules deny `.env`, `~/.ssh/*`, etc. across all tools and bash at once, matching both the path as referenced and its symlink-resolved form so a deny cannot be evaded through a symlink alias
-- **Guards external paths** — prompts before file tools or bash commands reach outside `cwd`
-- **Fails closed** — an internal gate error blocks the tool (with a `gate_error` review-log entry and a matching `permissions:decision` broadcast), and an unparseable bash command — or an indirection wrapper that hides the gated command (`bash -c`/`eval`, `sudo`, `env`, `xargs`, `find -exec`, …) — prompts (`ask`) rather than passing silently
-- **Forwards prompts from subagents** — `ask` policies work even in non-UI execution contexts
-- **Broadcasts UI prompt events** — `permissions:ui_prompt` fires only when the permission system is about to invoke the active user-facing permission UI, and every prompt it announces — including one forwarded up from a subagent — is answered by a `permissions:decision` on the same bus
-- **Native [`@gotgenes/pi-subagents`](https://github.com/gotgenes/pi-subagents) integration** — in-process child sessions register with the permission system automatically, enabling per-agent policy enforcement and `ask`-state forwarding to the parent UI without configuration
+1. Run every matching Claude Code-compatible `PreToolUse` hook.
+2. A merged hook decision of `allow` executes the tool immediately.
+3. A merged hook decision of `deny` blocks the tool immediately.
+4. A merged hook decision of `ask` or `defer` uses a prior user-granted session approval when one matches.
+5. Otherwise, show exactly one permission dialog.
+
+Hook decisions are merged with this priority:
+
+```text
+deny > ask > allow > defer
+```
+
+The hook always runs before session approvals, so a later hook denial can stop a previously approved pattern.
+Configured `permission`, `shellTools`, `authorizerChain`, and yolo policy behavior do not bypass this flow.
+An unexpected internal exception fails closed and blocks the tool call.
 
 ## Install
 
@@ -30,186 +35,179 @@ Permission enforcement extension for the [Pi](https://pi.mariozechner.at/) codin
 pi install npm:@gotgenes/pi-permission-system
 ```
 
+A checkout of this repository can also be loaded directly because the root `package.json` declares `packages/pi-permission-system/src/index.ts` as a Pi extension.
+
 ## Quick Start
 
-1. Create the global config file at `~/.pi/agent/extensions/pi-permission-system/config.json`:
-
-    ```jsonc
-    {
-      "permission": {
-        "*": "allow",
-        "path": {
-          "*": "allow",
-          "*.env": "deny",
-          "*.env.*": "deny",
-          "*.env.example": "allow"
-        },
-        "bash": {
-          "*": "ask",
-          "rm -rf *": "deny",
-          "sudo *": "ask"
-        },
-        "external_directory": "ask"
-      }
-    }
-    ```
-
-2. Start Pi — the extension automatically loads and enforces your policy.
-
-All permissions use one of three states:
-
-| State   | Behavior                                 |
-| ------- | ---------------------------------------- |
-| `allow` | Permits the action silently              |
-| `deny`  | Blocks the action with an error message  |
-| `ask`   | Prompts the user for confirmation via UI |
-
-When the dialog prompts, you can approve once or approve a pattern for the rest of the session.
-In an interactive TUI session the prompt is an inline keybind dialog — `y` approve, `s` approve for this session, `n` deny, `r` deny with a reason — where each hotkey arms and a second press confirms (configurable via `doublePressToConfirm`).
-The prompt shows one fact per line — who is asking, the tool, the matched rule, the value being decided — within a row budget, so a large tool input cannot take over the transcript; `Ctrl+O` (`app.tools.expand`) expands it to the complete request.
-See [docs/configuration.md](docs/configuration.md#inline-permission-dialog-tui) for the hotkeys and [docs/session-approvals.md](docs/session-approvals.md) for session-scoped rules and pattern suggestions.
-
-The `path` surface is a cross-cutting gate that applies to **all** file access — Pi tools, bash commands, MCP calls, and extension tools alike.
-Extension and MCP tools that operate on paths (via `input.path`, MCP's `input.arguments.path`, or a registered access extractor) are gated by default, so a `path` deny cannot be overridden by a per-tool allow — making it the right place to protect sensitive files like `.env` or `~/.ssh/*` from every tool at once.
-A `path` pattern matches both the path as the agent references it and its canonical (symlink-resolved) form, so a deny still fires when a symlink aliases a sensitive target.
-
-For per-tool path patterns (`read`, `write`, `edit`, `find`, `grep`, `ls`), patterns are matched against the file path from `input.path`.
-This lets you express rules like "allow reads but deny `.env` files" at the individual tool level.
-Like the cross-cutting `path` surface, per-tool patterns match both the referenced path and its canonical (symlink-resolved) form, so a per-tool deny resists symlink-alias evasion.
-When Pi's current working directory is known, relative path inputs also match their cwd-normalized absolute form, so `src/App.jsx` can match both `src/*` and `/workspace/project/*`.
-
-The `external_directory` surface is the CWD-boundary gate: it decides whether reaching **outside** the working tree is allowed, and accepts a pattern map so you can allow specific outside-CWD directories without opening up all external access.
-This is the right surface for silencing repeated prompts on a local cache like `~/.cargo/registry` — allow it here, not on `path`:
+Create `~/.pi/agent/extensions/pi-permission-system/config.json`:
 
 ```jsonc
 {
-  "permission": {
-    "external_directory": {
-      "*": "ask",
-      "~/.cargo/registry/*": "allow"
-    }
+  "$schema": "https://raw.githubusercontent.com/gotgenes/pi-packages/main/packages/pi-permission-system/schemas/permissions.schema.json",
+  "allowLocalEdits": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "moriarty hooks exec",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
   }
 }
 ```
 
-The trailing `*` is greedy and crosses subdirectory boundaries, so it allows every file beneath the directory; a bare `~/.cargo/registry` matches only the directory entry itself.
+`allowLocalEdits` does not approve edits.
+It only sets the hook input's `permission_mode` to `acceptEdits`.
 
-Four layers compose with most-restrictive-wins: `path` (cross-cutting) → `external_directory` (CWD boundary) → per-tool patterns → `bash` command patterns.
-Because `ask` is more restrictive than `allow`, a `path` allow cannot loosen an `external_directory: ask` boundary — allow outside-CWD directories on `external_directory`.
-See [docs/configuration.md](docs/configuration.md) for the full recipe.
+## Hook Protocol
+
+Matchers are regular expressions over Claude Code-compatible tool names such as `Bash`, `Read`, `Write`, `Edit`, `Grep`, `Glob`, and `mcp__server__tool`.
+Commands execute through `sh -c`, so hooks require a POSIX-compatible `sh` on `PATH`.
+Stock Windows without Git Bash, MSYS2, or another compatible shell defers each hook to the dialog with a `spawn_error` diagnostic.
+Each matching command runs from the session working directory and receives JSON on standard input:
+
+```json
+{
+  "session_id": "session-id",
+  "cwd": "/workspace/project",
+  "permission_mode": "acceptEdits",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": { "command": "git status" },
+  "tool_use_id": "tool-call-id",
+  "transcript_path": "/path/to/session.jsonl"
+}
+```
+
+A hook can return a decision on standard output:
+
+```json
+{
+  "hookSpecificOutput": {
+    "permissionDecision": "allow",
+    "permissionDecisionReason": "Read-only repository inspection"
+  }
+}
+```
+
+Supported decisions are `allow`, `deny`, `ask`, and `defer`.
+Exit code `2` is treated as `deny`, with standard error used as the reason.
+Empty output, malformed output, timeout, spawn failure, and other non-zero exits defer to the dialog and emit a `permission_request.hook_diagnostic` review-log entry.
+`updatedInput` and `additionalContext` are parsed for protocol compatibility but are not applied.
+
+An optional hook `if` field supports `Tool(pattern)` matching against common tool inputs:
+
+```json
+{
+  "matcher": "Bash",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "check-destructive-command",
+      "if": "Bash(rm -rf *)"
+    }
+  ]
+}
+```
+
+## Permission Dialog
+
+Only one interactive permission transaction is active at a time.
+Concurrent asks wait in FIFO order instead of replacing one another.
+Changing or shutting down the session cancels the active prompt and all queued prompts.
+
+The dialog shows aligned request facts within `promptMaxRows` and `promptFieldMaxWidth` limits.
+`Ctrl+O` expands it to the complete request.
+The denial-reason field uses Pi's line editor and accepts pasted text, collapsing pasted newlines into spaces.
+
+| Key | Decision                                      |
+| --- | --------------------------------------------- |
+| `y` | Approve once                                  |
+| `s` | Approve the suggested pattern for the session |
+| `n` | Deny                                          |
+| `r` | Deny with a reason                            |
+
+`doublePressToConfirm` controls whether a decision hotkey must be pressed twice.
 
 ## Configuration
-
-Config lives in one JSON file per scope:
 
 | Scope   | Path                                                      |
 | ------- | --------------------------------------------------------- |
 | Global  | `~/.pi/agent/extensions/pi-permission-system/config.json` |
 | Project | `<cwd>/.pi/extensions/pi-permission-system/config.json`   |
 
-Project overrides global; per-agent YAML frontmatter overrides both.
-Project config (policy and runtime knobs) is loaded only once the project is trusted — in an untrusted directory only global config applies, so an untrusted repository cannot loosen your global policy (see [Upgrading](#2200--project-config-requires-project-trust)).
+Project configuration loads only for trusted projects.
+A project `hooks` value replaces the complete global hook set.
+Scalar runtime settings use project-over-global replacement.
 
-Within a surface map like `bash` or `mcp`, **last matching rule wins** — put broad catch-alls first and specific overrides after.
+| Field                    | Purpose                                              |
+| ------------------------ | ---------------------------------------------------- |
+| `hooks`                  | Claude Code-compatible `PreToolUse` commands         |
+| `allowLocalEdits`        | Send `permission_mode: "acceptEdits"` to hooks       |
+| `yoloMode`               | Send `permission_mode: "bypassPermissions"` to hooks |
+| `doublePressToConfirm`   | Require confirmation of TUI decision hotkeys         |
+| `forwardingTimeoutMs`    | Bound subagent forwarding waits                      |
+| `promptMaxRows`          | Bound rendered prompt rows                           |
+| `promptFieldMaxWidth`    | Bound each rendered prompt field                     |
+| `reviewLogFieldMaxWidth` | Bound each structured review-log value               |
+| `permissionReviewLog`    | Enable the structured permission review log          |
+| `debugLog`               | Enable diagnostic logging                            |
 
-The optional `shellTools` field records which non-`bash` tools carry shell semantics (e.g. an `exec_command` tool that replaces native `bash`), so they are gated at full parity with native `bash` — see [docs/configuration.md](docs/configuration.md#shelltools--gating-aliased-shell-tools).
+`allowWebAccess`, `allowedFetchDomains`, `permission`, `piInfrastructureReadPaths`, `shellTools`, and `authorizerChain` are migration compatibility fields rather than production authority.
+`toolInputPreviewMaxLength` and `toolTextSummaryMaxLength` are accepted but ignored; use the prompt rendering limits instead.
+See [docs/configuration.md](docs/configuration.md) for the complete reference.
 
-The optional `authorizerChain` field names registered case-by-case decision links (e.g. a light model judge) to consult when a request lands on `ask`, ahead of the interactive prompt.
-A downstream extension registers a link via `getPermissionsService().registerAuthorizer(name, authorize)`; it decides nothing until you name it here (opt-in), config order fixes the chain order, and the chain owner caps any link's `allow` on `external_directory`/`path` to keep it within your policy — see [docs/configuration.md](docs/configuration.md#authorizer-chain--case-by-case-decision-links).
-A subagent's ask is reviewed by the chain of the session serving it, one hop up, rather than inside the subagent — see the same section.
-[`@gotgenes/pi-permission-model-judge`](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-model-judge) is a first-party reference implementation of such a link — a deny-first reviewer that auto-denies mistyped out-of-directory paths.
+## Subagents
 
-For the full reference — all surfaces, runtime knobs, per-agent overrides, merge semantics, and common recipes — see [docs/configuration.md](docs/configuration.md).
+A child runs its own hook with the child session ID, working directory, transcript, and raw tool input.
+If that hook asks or defers, the request is forwarded to the serving parent's dialog.
+The parent neither reruns the child's hook nor consults `authorizerChain`.
+A session grant can apply to the requesting child or to the whole serving session.
 
-## Upgrading
+In-process serving state uses a process-global registry.
+Out-of-process parents publish a filesystem heartbeat, allowing children to fail quickly when the target process is absent, stale, or serving another session.
+Forwarded decisions retain the request ID and record both the responding session and its decision provenance.
 
-### 22.0.0 — project config requires project trust
+## Logs and Events
 
-Project-scoped configuration (the project `config.json` and project-agent frontmatter — both permission policy and runtime knobs such as `yoloMode`) is now loaded only when Pi reports the project as trusted.
-In an untrusted directory, only global config applies; a skip is surfaced with a warning and a `project_trust.skipped` review-log entry.
-Grant project trust (or set `defaultProjectTrust`) to load a project's config.
-See [docs/migration/0644-project-trust-gating.md](docs/migration/0644-project-trust-gating.md).
+Hook approvals and denials are written with explicit `pretooluse_hook` provenance.
+Every permission request has a request ID shared by its review records and terminal broadcasts.
+`permissions:ui_prompt` carries structured request facts immediately before a visible prompt.
+`permissions:decision` reports hook decisions, dialog outcomes, gate errors, and served forwarded outcomes.
 
-### 16.0.0 — the bash gate now fails closed
+Review-log values are bounded by `reviewLogFieldMaxWidth`.
+Values bound to sensitive key names are masked; a secret embedded inside a command string is not.
 
-The permission gate fails closed: an internal gate error blocks the tool (with a `gate_error` review-log entry) instead of running it ungated, and a non-empty bash command that cannot be parsed resolves to `ask` (sentinel `<unparseable-bash-command>`) rather than falling through to a permissive top-level `*`.
-Commands that previously slipped through silently on the error or empty-parse path now block or prompt.
+## Scope and Non-Goals
 
-If you relied on the old permissive behavior for bash, set an explicit permissive bash policy — `"bash": { "*": "allow" }` — which also suppresses the new startup warning emitted when a top-level `"*": "allow"` leaves bash ungated.
-
-## Scope and non-goals
-
-**Purpose.**
-An agent takes many actions, most of them benign, but some of which need a human to confirm they are safe or correct.
-This package routes your attention to those, and turns each ruling into deterministic, reusable policy — enforced at the host level rather than by asking the model to police itself.
-
-**In scope.**
-Hardening the gates against bypass, fail-closed corrections (breaking ones included), named opt-in extension seams for downstream packages, and structural work backed by a written decision record.
-
-**Non-goals.**
-
-- _Sandboxing._
-  This is a decision layer, not a sandbox — it decides and records, it does not isolate.
-  If a dangerous action is reachable through an allowed tool, policy has to restrict it explicitly.
-- _Deciding project trust._
-  A policy enforcer, not a trust oracle: whether a project is trusted is Pi's decision and yours, and this package observes it.
-- _Permissive defaults, trust profiles, or workflow presets._
-  Your risk profile is not knowable from here, so defaults are least-privilege and common policies ship as documented recipes rather than preset keywords.
-- _Guessing what is sensitive._
-  No built-in secret denylist, and log redaction is key-name-structural rather than predictive — a redactor that silently misses a key invites treating the log as safe to share.
-- _Model judgment in the core._
-  This package makes no LLM call and holds no model config; model-assisted judging attaches as a chain link over the authorizer seam instead.
-  A link decides nothing until you name it in `authorizerChain`, and its `allow` on an excluded surface is downgraded to `defer`.
-
-The [architecture doc](https://github.com/gotgenes/pi-packages/blob/main/packages/pi-permission-system/docs/architecture/architecture.md#scope-and-non-goals) carries the full inventory, with the decision record behind each entry.
-
-**One decision is still open.**
-How policy may _enter_ the system — which channels are admissible, and with what precedence — is being worked out in [issue #639](https://github.com/gotgenes/pi-packages/issues/639), along with whether a capability model replaces the current surface list.
-Several requested widenings are parked on it rather than declined, durable persistence of an approval among them.
-
-**Where adjacent requests belong.**
-True isolation of a permitted action → an agent sandbox.
-Model-assisted judging of an `ask` → a chain link over the authorizer seam; [@gotgenes/pi-permission-model-judge](https://www.npmjs.com/package/@gotgenes/pi-permission-model-judge) is the first-party one, and judges mistyped paths.
-Approve-and-steer, edit diffs, and risk explanations → a downstream package over the `permissions:decision` event and the presentation seams.
+This package makes external hooks the automatic authority and provides a fail-closed interactive fallback.
+It does not sandbox an approved operation, rewrite tool input, mutate model context from hook output, or infer whether a command is safe inside the core.
+Those decisions belong in the configured hook implementation.
 
 ## Documentation
 
-| Document                                                                                                                       | Contents                                                                                                             |
-| ------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| [docs/configuration.md](docs/configuration.md)                                                                                 | Full policy reference, runtime knobs, per-agent overrides, recipes                                                   |
-| [docs/session-approvals.md](docs/session-approvals.md)                                                                         | Session-scoped rules, pattern suggestions, bash arity table                                                          |
-| [docs/cross-extension-api.md](docs/cross-extension-api.md)                                                                     | Cross-extension service accessor, event bus integration, prompt and decision broadcasts                              |
-| [docs/subagent-integration.md](docs/subagent-integration.md)                                                                   | Permission forwarding, coexistence with subagent extensions                                                          |
-| [docs/guides/permission-frontmatter-for-subagent-extensions.md](docs/guides/permission-frontmatter-for-subagent-extensions.md) | Convention guide for subagent extension authors                                                                      |
-| [docs/opencode-compatibility.md](docs/opencode-compatibility.md)                                                               | OpenCode compatibility — shared concepts, divergences, porting guide                                                 |
-| [docs/troubleshooting.md](docs/troubleshooting.md)                                                                             | Common issues, diagnostic logging, threat model                                                                      |
-| [docs/migration/legacy-to-flat.md](docs/migration/legacy-to-flat.md)                                                           | Migration from pre-v2 config layout                                                                                  |
-| [docs/migration/strict-config-validation.md](docs/migration/strict-config-validation.md)                                       | Strict config validation (breaking) — rejected configs, and the cross-scope fail-closed clamp                        |
-| [docs/migration/0644-project-trust-gating.md](docs/migration/0644-project-trust-gating.md)                                     | Project-trust gating (breaking) — project config loads only after project trust                                      |
-| [docs/migration/0745-prompt-payload-contracts.md](docs/migration/0745-prompt-payload-contracts.md)                             | Prompt payload contracts (breaking) — the forwarded wire, the `ui_prompt` broadcast, and the deprecated preview caps |
-| [docs/migration/0746-review-log-fields.md](docs/migration/0746-review-log-fields.md)                                           | Review-log fields (breaking) — `message` replaced by request facts, and the `reviewLogFieldMaxWidth` bound           |
+| Document                                                                                           | Contents                                        |
+| -------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| [docs/configuration.md](docs/configuration.md)                                                     | Configuration, hook protocol, dialog, and logs  |
+| [docs/cross-extension-api.md](docs/cross-extension-api.md)                                         | Service accessor and permission event contracts |
+| [docs/subagent-integration.md](docs/subagent-integration.md)                                       | Child hooks, forwarding, and liveness           |
+| [docs/troubleshooting.md](docs/troubleshooting.md)                                                 | Common failures and diagnostics                 |
+| [docs/migration/0745-prompt-payload-contracts.md](docs/migration/0745-prompt-payload-contracts.md) | Structured prompt and forwarding contracts      |
+| [docs/migration/0746-review-log-fields.md](docs/migration/0746-review-log-fields.md)               | Structured review-log fields and width limits   |
 
 ## Development
 
 ```bash
-pnpm run check       # Type-check TypeScript (no emit)
-pnpm run lint        # Biome + ESLint + lint:md
-pnpm run lint:md     # rumdl on README and docs
-pnpm run test        # Run tests from ./test
-pnpm run test:watch  # Run tests in watch mode
+pnpm --filter @gotgenes/pi-permission-system run check
+pnpm --filter @gotgenes/pi-permission-system run lint
+pnpm --filter @gotgenes/pi-permission-system run test
 ```
-
-### Pre-commit hooks
-
-This project uses [prek](https://prek.j178.dev/) to run Biome, ESLint, and rumdl on staged files before each commit.
-Run `pnpm install` to set up hooks automatically.
-
-## Acknowledgments
-
-This project began as a fork of [MasuRii/pi-permission-system](https://github.com/MasuRii/pi-permission-system).
-Thank you to [MasuRii](https://github.com/MasuRii) for the original work that made this possible.
-
-Thank you to the [OpenCode](https://opencode.ai) team for the permission model design that inspired the flat config format and evaluation semantics used in this extension.
 
 ## License
 

@@ -1,5 +1,9 @@
 # Event API
 
+> **Hooks-first runtime:** Policy queries return `ask` unless a user-granted session approval matches.
+> `registerAuthorizer` remains available for source compatibility, but configured authorizer chains are dormant.
+> Tool input formatters still shape the final dialog; access extractors do not grant or deny tool execution.
+
 The extension provides two cross-extension integration surfaces:
 
 1. **Service accessor** (preferred) — a `Symbol.for()`-backed synchronous API on `globalThis` for direct policy queries.
@@ -303,7 +307,7 @@ All three broadcasts are best-effort: a throwing listener cannot block permissio
 | ----------------------- | --------- | --------------------------------- | ------------------------- |
 | `permissions:ready`     | Broadcast | At `session_start`, after publish | `PermissionsReadyEvent`   |
 | `permissions:ui_prompt` | Broadcast | Before active UI prompt           | `PermissionUiPromptEvent` |
-| `permissions:decision`  | Broadcast | After every gate resolution       | `PermissionDecisionEvent` |
+| `permissions:decision`  | Broadcast | After each terminal resolution    | `PermissionDecisionEvent` |
 
 ---
 
@@ -312,9 +316,9 @@ All three broadcasts are best-effort: a throwing listener cannot block permissio
 The permission system emits `permissions:ui_prompt` immediately before it invokes the active user-facing permission UI.
 This event is for integrations such as notification extensions that should alert only when the user needs to respond to a permission prompt.
 It is not a generic "permission request entered waiting state" event, and it does not imply the prompt will be approved.
-Policy decisions that resolve without an active UI prompt, such as `policy_allow`, `policy_deny`, `session_approved`, `infrastructure_auto_allowed`, or `auto_approved`, do not emit this event.
+Terminal decisions that resolve without an active UI prompt, such as `hook_approved`, `hook_denied`, or `session_approved`, do not emit this event.
 Non-UI child sessions also do not emit this event when they create a forwarded permission request; the parent UI session emits it immediately before showing the forwarded permission dialog.
-A forwarded request the parent's own recorded policy decides (a matching `allow` or `deny`) is answered without a prompt and emits no event; the event fires only when the parent is actually about to ask the human.
+A forwarded request covered by a serving-session approval is answered without a prompt and emits no event; the event fires only when the parent is actually about to ask the human.
 The matching terminal `permissions:decision` is emitted in the parent session too, so a consumer that reacts to this event has a signal on the same bus telling it the prompt is over.
 Forwarded prompts that do reach the human are not degraded: the parent emits the child's original `source` and the same `surface`/`value` display projection, plus a populated `forwarding` context identifying the requesting subagent.
 
@@ -391,7 +395,8 @@ The stability guarantee is additive, so any can be reintroduced in a later minor
 
 ## Decision Broadcasts
 
-Every permission gate resolution emits a `permissions:decision` event, regardless of outcome.
+Every terminal permission resolution emits a `permissions:decision` event.
+Hook decisions use `hook_approved` or `hook_denied`; hook asks and deferrals emit only after the session approval or dialog reaches the terminal result.
 This is useful for dashboards, telemetry, or audit overlays.
 
 A session serving another session's forwarded request emits one too, on its own bus, for every forwarded ask it escalates.
@@ -414,32 +419,37 @@ pi.events.on("permissions:decision", (raw) => {
 
 ### Payload Fields
 
-| Field            | Type                                        | Description                                                                                           |
-| ---------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `requestId`      | `string`                                    | Id of the permission request this decision resolves                                                   |
-| `surface`        | `string`                                    | Permission surface (`"bash"`, `"read"`, `"mcp"`, `"skill"`, `"external_directory"`, etc.)             |
-| `value`          | `string`                                    | Value evaluated (command, tool name, skill name, path)                                                |
-| `result`         | `"allow" \| "deny"`                         | Final outcome                                                                                         |
-| `resolution`     | `string`                                    | How the outcome was reached (see table below)                                                         |
-| `origin`         | `string \| null`                            | Config scope that contributed the winning rule                                                        |
-| `agentName`      | `string \| null`                            | Active agent name when known                                                                          |
-| `matchedPattern` | `string \| null`                            | Pattern from the winning rule                                                                         |
-| `forwarding`     | `ForwardedPromptContext \| null` (optional) | Requesting subagent, on a decision made while serving a forwarded request; absent on a local decision |
+| Field | Type | Description |
+| --- | --- | --- |
+| `requestId` | `string` | ID of the permission request this decision resolves |
+| `surface` | `string` | Permission surface such as `bash`, `read`, `mcp`, or `skill` |
+| `value` | `string` | Command, tool name, skill name, or path that was evaluated |
+| `result` | `"allow" \| "deny"` | Final outcome |
+| `resolution` | `string` | How the outcome was reached |
+| `origin` | `string \| null` | Provenance such as `pretooluse_hook`, `session`, or `builtin` |
+| `agentName` | `string \| null` | Active agent name when known |
+| `matchedPattern` | `string \| null` | Pattern from the winning rule when applicable |
+| `forwarding` | `ForwardedPromptContext \| null` (optional) | Requesting subagent on a decision served by this session |
 
 ### Resolution Values
 
-| Value                         | Meaning                                                              |
-| ----------------------------- | -------------------------------------------------------------------- |
-| `policy_allow`                | Config rule said allow — no prompt shown                             |
-| `policy_deny`                 | Config rule said deny — blocked immediately                          |
-| `session_approved`            | Covered by a session-level approval from earlier in the same session |
-| `infrastructure_auto_allowed` | Read of a Pi infrastructure path — auto-allowed                      |
-| `user_approved`               | User approved once via dialog                                        |
-| `user_approved_for_session`   | User approved for the rest of the session                            |
-| `user_denied`                 | User denied via dialog                                               |
-| `auto_approved`               | Yolo mode — approved automatically without dialog                    |
-| `confirmation_unavailable`    | State was `ask` but no UI was available — blocked                    |
-| `gate_error`                  | The gate threw, or an escalation failed — blocked, fail-closed       |
+The published union retains full-policy values for compatibility.
+The hooks-first production composition does not emit the rows marked **retained**.
+
+| Value | Runtime status | Meaning |
+| --- | --- | --- |
+| `policy_allow` | Retained | Full-policy config rule allowed without a prompt |
+| `policy_deny` | Retained | Full-policy config rule denied without a prompt |
+| `session_approved` | Active | Covered by an earlier user-granted session approval |
+| `infrastructure_auto_allowed` | Retained | Full-policy infrastructure read bypass |
+| `user_approved` | Active | User approved once via dialog |
+| `user_approved_for_session` | Active | User approved for the rest of the session |
+| `user_denied` | Active | User denied via dialog |
+| `auto_approved` | Retained | Full-policy yolo approval without a dialog |
+| `confirmation_unavailable` | Active | Confirmation was required but no authority answered |
+| `gate_error` | Active | The hook or fallback gate threw and the call was blocked fail-closed |
+| `hook_approved` | Active | A `PreToolUse` hook approved the tool call |
+| `hook_denied` | Active | A `PreToolUse` hook denied the tool call |
 
 ---
 

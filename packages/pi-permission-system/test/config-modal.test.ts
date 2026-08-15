@@ -1,8 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { expect, test, vi } from "vitest";
-import { loadUnifiedConfig } from "#src/config-loader";
 import { registerPermissionSystemCommand } from "#src/config-modal";
 import type { CommandConfigStore } from "#src/config-store";
 import {
@@ -40,6 +36,14 @@ type CommandContextStub = {
   };
 };
 
+type CommandDefinition = {
+  description: string;
+  getArgumentCompletions?: (
+    argumentPrefix: string,
+  ) => Array<{ value: string; label: string; description?: string }> | null;
+  handler: (args: string, ctx: CommandContextStub) => Promise<void>;
+};
+
 function createCommandContext(hasUI: boolean): {
   ctx: CommandContextStub;
   notifications: Notification[];
@@ -73,179 +77,161 @@ function lastNotification(notifications: Notification[]): Notification {
   return notifications[notifications.length - 1];
 }
 
-test("permission-system command completions expose top-level config actions", () => {
-  const baseDir = mkdtempSync(
-    join(tmpdir(), "pi-permission-system-command-completions-"),
-  );
-  const configPath = join(baseDir, "config.json");
-  let config: PermissionSystemExtensionConfig = { ...DEFAULT_EXTENSION_CONFIG };
+function makeCommandHarness(
+  options: {
+    config?: PermissionSystemExtensionConfig;
+    configPath?: string;
+    rules?: Ruleset;
+  } = {},
+): {
+  definition: CommandDefinition;
+  registeredName: string;
+  save: ReturnType<typeof vi.fn>;
+  current(): PermissionSystemExtensionConfig;
+} {
+  let config = options.config ?? { ...DEFAULT_EXTENSION_CONFIG };
+  const save = vi.fn((next: PermissionSystemExtensionConfig) => {
+    config = next;
+  });
+  const configStore: CommandConfigStore = {
+    current: () => config,
+    save,
+  };
+  let registeredName = "";
+  let definition: CommandDefinition | null = null;
 
-  try {
-    const configStore: CommandConfigStore = {
-      current: () => config,
-      save: (next) => {
-        config = next;
+  registerPermissionSystemCommand(
+    {
+      registerCommand(name: string, nextDefinition: CommandDefinition) {
+        registeredName = name;
+        definition = nextDefinition;
       },
-    };
-    const controller = {
+    } as never,
+    {
       config: configStore,
-      configPath,
-      getActiveAgentConfigRules: () => [] as Ruleset,
-    };
+      configPath: options.configPath ?? "/fake/config.json",
+      getActiveAgentConfigRules: () => options.rules ?? [],
+    },
+  );
 
-    let definition: {
-      description: string;
-      getArgumentCompletions?: (
-        argumentPrefix: string,
-      ) => Array<{ value: string; label: string; description?: string }> | null;
-      handler: (args: string, ctx: CommandContextStub) => Promise<void>;
-    } | null = null;
+  return {
+    definition: definition!,
+    registeredName,
+    save,
+    current: () => config,
+  };
+}
 
-    registerPermissionSystemCommand(
-      {
-        registerCommand(_name: string, nextDefinition: typeof definition) {
-          definition = nextDefinition;
-        },
-      } as never,
-      controller,
-    );
+test("permission-system command completions expose top-level config actions", () => {
+  const { definition } = makeCommandHarness();
 
-    expect(definition!.getArgumentCompletions).toBeTypeOf("function");
-
-    const topLevel = definition!.getArgumentCompletions?.("");
-    expect(Array.isArray(topLevel)).toBeTruthy();
-    expect(topLevel?.some((item) => item.value === "show")).toBeTruthy();
-    expect(topLevel?.some((item) => item.value === "reset")).toBeTruthy();
-
-    const filtered = definition!.getArgumentCompletions?.("pa");
-    expect(filtered?.map((item) => item.value)).toEqual(["path"]);
-    expect(definition!.getArgumentCompletions?.("path extra")).toBe(null);
-    expect(definition!.getArgumentCompletions?.("zzz")).toBe(null);
-  } finally {
-    rmSync(baseDir, { recursive: true, force: true });
-  }
+  expect(definition.getArgumentCompletions).toBeTypeOf("function");
+  const topLevel = definition.getArgumentCompletions?.("");
+  expect(topLevel?.some((item) => item.value === "show")).toBe(true);
+  expect(topLevel?.some((item) => item.value === "reset")).toBe(true);
+  expect(
+    definition.getArgumentCompletions?.("pa")?.map((item) => item.value),
+  ).toEqual(["path"]);
+  expect(definition.getArgumentCompletions?.("path extra")).toBe(null);
+  expect(definition.getArgumentCompletions?.("zzz")).toBe(null);
 });
 
-test("permission-system command handlers manage config summary, persistence, and modal routing", async () => {
-  const baseDir = mkdtempSync(join(tmpdir(), "pi-permission-system-command-"));
-  const configPath = join(baseDir, "config.json");
-  let config: PermissionSystemExtensionConfig = {
+test("permission-system registers its command metadata", () => {
+  const { definition, registeredName } = makeCommandHarness();
+
+  expect(registeredName).toBe("permission-system");
+  expect(definition.description).toContain("Configure pi-permission-system");
+});
+
+test("show summarizes active hook settings", async () => {
+  const config = {
+    ...DEFAULT_EXTENSION_CONFIG,
+    debugLog: true,
+    yoloMode: true,
+    allowLocalEdits: true,
+  };
+  const { definition } = makeCommandHarness({ config });
+  const context = createCommandContext(true);
+
+  await definition.handler("show", context.ctx);
+
+  const message = lastNotification(context.notifications).message;
+  expect(message).toContain("yoloMode=on");
+  expect(message).toContain("allowLocalEdits=on");
+  expect(message).toContain("debugLog=on");
+});
+
+test.each([
+  ["path", "permission-system config: /custom/config.json", "info"],
+  ["help", "Usage: /permission-system", "info"],
+  ["unknown", "Usage: /permission-system", "warning"],
+] as const)("%s reports the expected command response", async (argument, text, level) => {
+  const { definition } = makeCommandHarness({
+    configPath: "/custom/config.json",
+  });
+  const context = createCommandContext(true);
+
+  await definition.handler(argument, context.ctx);
+
+  expect(lastNotification(context.notifications)).toEqual(
+    expect.objectContaining({ level }),
+  );
+  expect(lastNotification(context.notifications).message).toContain(text);
+});
+
+test("reset restores settings while preserving the active hook set", async () => {
+  const config = normalizePermissionSystemConfig({
     debugLog: true,
     permissionReviewLog: false,
     yoloMode: true,
     allowLocalEdits: true,
-    doublePressToConfirm: true,
-  };
-
-  try {
-    writeFileSync(
-      configPath,
-      `${JSON.stringify(normalizePermissionSystemConfig(config), null, 2)}\n`,
-      "utf-8",
-    );
-
-    const configStore: CommandConfigStore = {
-      current: () => config,
-      save: (next) => {
-        const currentConfig = normalizePermissionSystemConfig(
-          loadUnifiedConfig(configPath).config,
-        );
-        const normalized = normalizePermissionSystemConfig(next);
-        writeFileSync(
-          configPath,
-          `${JSON.stringify(normalized, null, 2)}\n`,
-          "utf-8",
-        );
-        config = normalizePermissionSystemConfig(
-          loadUnifiedConfig(configPath).config,
-        );
-        expect(config).not.toEqual(currentConfig);
-      },
-    };
-    const controller = {
-      config: configStore,
-      configPath,
-      getActiveAgentConfigRules: () => [] as Ruleset,
-    };
-
-    let registeredName = "";
-    let definition: {
-      description: string;
-      getArgumentCompletions?: (
-        argumentPrefix: string,
-      ) => Array<{ value: string; label: string; description?: string }> | null;
-      handler: (args: string, ctx: CommandContextStub) => Promise<void>;
-    } | null = null;
-
-    registerPermissionSystemCommand(
-      {
-        registerCommand(name: string, nextDefinition: typeof definition) {
-          registeredName = name;
-          definition = nextDefinition;
+    doublePressToConfirm: false,
+    hooks: {
+      PreToolUse: [
+        {
+          matcher: ".*",
+          hooks: [{ type: "command", command: "policy-check" }],
         },
-      } as never,
-      controller,
-    );
+      ],
+    },
+  });
+  const { definition, save, current } = makeCommandHarness({ config });
+  const context = createCommandContext(true);
 
-    expect(registeredName).toBe("permission-system");
-    expect(definition!.description).toContain("Configure pi-permission-system");
+  await definition.handler("reset", context.ctx);
 
-    const infoCtx = createCommandContext(true);
-    await definition!.handler("show", infoCtx.ctx);
-    expect(lastNotification(infoCtx.notifications).message).toContain(
-      "yoloMode=on",
-    );
-    expect(lastNotification(infoCtx.notifications).message).toContain(
-      "allowLocalEdits=on",
-    );
-    expect(lastNotification(infoCtx.notifications).message).toContain(
-      "debugLog=on",
-    );
-
-    await definition!.handler("path", infoCtx.ctx);
-    expect(lastNotification(infoCtx.notifications).message).toBe(
-      `permission-system config: ${configPath}`,
-    );
-
-    await definition!.handler("help", infoCtx.ctx);
-    expect(lastNotification(infoCtx.notifications).message).toContain(
-      "Usage: /permission-system",
-    );
-
-    await definition!.handler("reset", infoCtx.ctx);
-    expect(config).toEqual(DEFAULT_EXTENSION_CONFIG);
-    expect(lastNotification(infoCtx.notifications).message).toBe(
-      "Permission system settings reset to defaults.",
-    );
-
-    const persisted = JSON.parse(readFileSync(configPath, "utf8")) as Record<
-      string,
-      unknown
-    >;
-    expect(persisted).toEqual(DEFAULT_EXTENSION_CONFIG);
-
-    await definition!.handler("unknown", infoCtx.ctx);
-    expect(lastNotification(infoCtx.notifications).level).toBe("warning");
-    expect(lastNotification(infoCtx.notifications).message).toContain(
-      "Usage: /permission-system",
-    );
-
-    const headlessCtx = createCommandContext(false);
-    await definition!.handler("", headlessCtx.ctx);
-    expect(lastNotification(headlessCtx.notifications).message).toBe(
-      "/permission-system requires interactive TUI mode.",
-    );
-
-    const modalCtx = createCommandContext(true);
-    await definition!.handler("", modalCtx.ctx);
-    expect(modalCtx.getCustomCalls()).toBe(1);
-  } finally {
-    rmSync(baseDir, { recursive: true, force: true });
-  }
+  expect(save).toHaveBeenCalledOnce();
+  expect(current()).toEqual({
+    ...DEFAULT_EXTENSION_CONFIG,
+    hooks: config.hooks,
+  });
+  expect(lastNotification(context.notifications).message).toBe(
+    "Permission system settings reset to defaults.",
+  );
 });
 
-test("show output includes rule origins when getComposedRules is provided", async () => {
-  const config = { ...DEFAULT_EXTENSION_CONFIG };
+test("an empty command warns when no interactive UI exists", async () => {
+  const { definition } = makeCommandHarness();
+  const context = createCommandContext(false);
+
+  await definition.handler("", context.ctx);
+
+  expect(lastNotification(context.notifications).message).toBe(
+    "/permission-system requires interactive TUI mode.",
+  );
+  expect(context.getCustomCalls()).toBe(0);
+});
+
+test("an empty command opens the settings modal in a UI session", async () => {
+  const { definition } = makeCommandHarness();
+  const context = createCommandContext(true);
+
+  await definition.handler("", context.ctx);
+
+  expect(context.getCustomCalls()).toBe(1);
+});
+
+test("show output includes rule origins when composed rules exist", async () => {
   const composedRules: Rule[] = [
     {
       surface: "read",
@@ -262,64 +248,26 @@ test("show output includes rule origins when getComposedRules is provided", asyn
       origin: "project",
     },
   ];
+  const { definition } = makeCommandHarness({ rules: composedRules });
+  const context = createCommandContext(true);
 
-  const controller = {
-    config: { current: () => config, save: () => {} } as CommandConfigStore,
-    configPath: "/fake/config.json",
-    getActiveAgentConfigRules: () => composedRules,
-  };
+  await definition.handler("show", context.ctx);
+  const message = lastNotification(context.notifications).message;
 
-  let definition: {
-    handler: (args: string, ctx: CommandContextStub) => Promise<void>;
-  } | null = null;
-
-  registerPermissionSystemCommand(
-    {
-      registerCommand(_name: string, nextDef: typeof definition) {
-        definition = nextDef;
-      },
-    } as never,
-    controller,
-  );
-
-  const ctx = createCommandContext(true);
-  await definition!.handler("show", ctx.ctx);
-  const msg = lastNotification(ctx.notifications).message;
-
-  expect(msg).toContain("global");
-  expect(msg).toContain("project");
-  expect(msg).toContain("read");
-  expect(msg).toContain("bash");
+  expect(message).toContain("global");
+  expect(message).toContain("project");
+  expect(message).toContain("read");
+  expect(message).toContain("bash");
 });
 
-test("show output omits rule summary when getComposedRules is not provided", async () => {
+test("show output omits a rule summary when no composed rules exist", async () => {
   const config = { ...DEFAULT_EXTENSION_CONFIG, yoloMode: true };
+  const { definition } = makeCommandHarness({ config });
+  const context = createCommandContext(true);
 
-  const controller = {
-    config: { current: () => config, save: () => {} } as CommandConfigStore,
-    configPath: "/fake/config.json",
-    getActiveAgentConfigRules: () => [] as Ruleset,
-  };
+  await definition.handler("show", context.ctx);
+  const message = lastNotification(context.notifications).message;
 
-  let definition: {
-    handler: (args: string, ctx: CommandContextStub) => Promise<void>;
-  } | null = null;
-
-  registerPermissionSystemCommand(
-    {
-      registerCommand(_name: string, nextDef: typeof definition) {
-        definition = nextDef;
-      },
-    } as never,
-    controller,
-  );
-
-  const ctx = createCommandContext(true);
-  await definition!.handler("show", ctx.ctx);
-  const msg = lastNotification(ctx.notifications).message;
-
-  // Config knobs still present.
-  expect(msg).toContain("yoloMode=on");
-  // No rule annotation lines.
-  expect(msg).not.toContain("(global)");
+  expect(message).toContain("yoloMode=on");
+  expect(message).not.toContain("(global)");
 });

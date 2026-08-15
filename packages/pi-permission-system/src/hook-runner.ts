@@ -22,13 +22,14 @@ const DECISION_PRIORITY: Record<HookPermissionDecision, number> = {
 /**
  * Merge multiple hook results, picking the highest-priority decision
  * (deny > ask > allow > defer). `updatedInput` and `additionalContext` come
- * from the winning result; `reasons` collects all non-empty reasons.
+ * from the winning result; `reasons` collects non-empty reasons only from
+ * results with the winning decision.
  */
 export function mergeHookDecisions(
   results: PreToolUseHookResult[],
 ): MergedHookDecision {
   if (results.length === 0) {
-    return { decision: "defer", reasons: [] };
+    return { decision: "defer", reasons: [], diagnostics: [] };
   }
 
   const sorted = [...results].sort(
@@ -39,8 +40,18 @@ export function mergeHookDecisions(
   return {
     decision: winner.decision,
     reasons: results
-      .map((r) => r.reason)
-      .filter((r): r is string => typeof r === "string" && r.length > 0),
+      .filter((result) => result.decision === winner.decision)
+      .map((result) => result.reason)
+      .filter((reason): reason is string =>
+        Boolean(reason && reason.length > 0),
+      ),
+    diagnostics: results.map((result) => ({
+      decision: result.decision,
+      status: result.status,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      hasStderr: Boolean(result.stderr),
+    })),
     updatedInput: winner.updatedInput,
     additionalContext: winner.additionalContext,
   };
@@ -48,7 +59,8 @@ export function mergeHookDecisions(
 
 /**
  * Run all matching PreToolUse hooks sequentially and merge their decisions.
- * Returns `{ decision: "defer", reasons: [] }` when no hook matches.
+ * Returns `{ decision: "defer", reasons: [], diagnostics: [] }` when no hook
+ * matches.
  */
 export async function runPreToolUseHooks(
   matchers: PreToolUseHookMatcher[],
@@ -65,7 +77,7 @@ export async function runPreToolUseHooks(
   );
 
   if (commands.length === 0) {
-    return { decision: "defer", reasons: [] };
+    return { decision: "defer", reasons: [], diagnostics: [] };
   }
 
   const hookInput: PreToolUseHookInput = {
@@ -81,7 +93,11 @@ export async function runPreToolUseHooks(
 
   const results: PreToolUseHookResult[] = [];
   for (const command of commands) {
-    const result = await executePreToolUseHook(command, hookInput);
+    const result = await executePreToolUseHook(
+      command,
+      hookInput,
+      context.useProcessGroup,
+    );
     results.push(result);
   }
 

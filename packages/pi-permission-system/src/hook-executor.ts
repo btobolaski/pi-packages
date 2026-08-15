@@ -7,6 +7,7 @@ import type {
 import { toRecord } from "#src/value-guards";
 
 const DEFAULT_HOOK_TIMEOUT_SECONDS = 10;
+const FORCE_KILL_GRACE_MS = 250;
 
 function isValidPermissionDecision(
   value: unknown,
@@ -22,25 +23,41 @@ function isValidPermissionDecision(
 function parseHookOutput(stdout: string): PreToolUseHookResult {
   const trimmed = stdout.trim();
   if (!trimmed) {
-    return { decision: "defer", exitCode: 0, timedOut: false };
+    return {
+      decision: "defer",
+      status: "empty_output",
+      exitCode: 0,
+      timedOut: false,
+    };
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    return { decision: "defer", exitCode: 0, timedOut: false };
+    return {
+      decision: "defer",
+      status: "invalid_output",
+      exitCode: 0,
+      timedOut: false,
+    };
   }
 
   const record = toRecord(parsed);
   const hookSpecificOutput = toRecord(record.hookSpecificOutput);
 
   if (!isValidPermissionDecision(hookSpecificOutput.permissionDecision)) {
-    return { decision: "defer", exitCode: 0, timedOut: false };
+    return {
+      decision: "defer",
+      status: "invalid_output",
+      exitCode: 0,
+      timedOut: false,
+    };
   }
 
   return {
     decision: hookSpecificOutput.permissionDecision,
+    status: "decision",
     reason:
       typeof hookSpecificOutput.permissionDecisionReason === "string"
         ? hookSpecificOutput.permissionDecisionReason
@@ -66,6 +83,7 @@ function parseHookOutput(stdout: string): PreToolUseHookResult {
 export function executePreToolUseHook(
   command: PreToolUseHookCommand,
   input: PreToolUseHookInput,
+  useProcessGroup = false,
 ): Promise<PreToolUseHookResult> {
   const timeoutMs = (command.timeout ?? DEFAULT_HOOK_TIMEOUT_SECONDS) * 1000;
   const inputJson = JSON.stringify(input);
@@ -85,23 +103,44 @@ export function executePreToolUseHook(
     let child: ReturnType<typeof spawn>;
     try {
       child = spawn("sh", ["-c", command.command], {
+        cwd: input.cwd,
+        detached: useProcessGroup,
         stdio: ["pipe", "pipe", "pipe"],
         env: process.env,
       });
     } catch {
-      resolve({ decision: "defer", exitCode: null, timedOut: false });
+      resolve({
+        decision: "defer",
+        status: "spawn_error",
+        exitCode: null,
+        timedOut: false,
+      });
       return;
     }
 
+    let forceKillHandle: ReturnType<typeof setTimeout> | undefined;
+    const signalHookProcess = (signal: NodeJS.Signals) => {
+      try {
+        if (useProcessGroup && child.pid !== undefined) {
+          process.kill(-child.pid, signal);
+        } else {
+          child.kill(signal);
+        }
+      } catch {
+        // Process may have already exited.
+      }
+    };
+
     const timeoutHandle = setTimeout(() => {
       if (!settled) {
-        try {
-          child.kill("SIGTERM");
-        } catch {
-          // Process may have already exited.
-        }
+        signalHookProcess("SIGTERM");
+        forceKillHandle = setTimeout(() => {
+          signalHookProcess("SIGKILL");
+        }, FORCE_KILL_GRACE_MS);
+        forceKillHandle.unref();
         finish({
           decision: "defer",
+          status: "timeout",
           stderr: stderrChunks.join(""),
           exitCode: null,
           timedOut: true,
@@ -122,10 +161,17 @@ export function executePreToolUseHook(
     }
 
     child.on("error", () => {
-      finish({ decision: "defer", exitCode: null, timedOut: false });
+      if (forceKillHandle) clearTimeout(forceKillHandle);
+      finish({
+        decision: "defer",
+        status: "spawn_error",
+        exitCode: null,
+        timedOut: false,
+      });
     });
 
     child.on("close", (code: number | null) => {
+      if (forceKillHandle) clearTimeout(forceKillHandle);
       const stdout = stdoutChunks.join("");
       const stderr = stderrChunks.join("");
 
@@ -139,6 +185,7 @@ export function executePreToolUseHook(
       if (code === 2) {
         finish({
           decision: "deny",
+          status: "decision",
           reason: stderr.trim() || "Hook blocked this tool call (exit code 2)",
           stderr,
           exitCode: 2,
@@ -149,6 +196,7 @@ export function executePreToolUseHook(
 
       finish({
         decision: "defer",
+        status: "nonzero_exit",
         stderr,
         exitCode: code,
         timedOut: false,

@@ -62,6 +62,14 @@ describe("unifiedConfigSchema", () => {
           .success,
       ).toBe(true);
     });
+
+    it("accepts deprecated web-access fields without granting authority", () => {
+      const result = unifiedConfigSchema.safeParse({
+        allowWebAccess: true,
+        allowedFetchDomains: ["example.com"],
+      });
+      expect(result.success).toBe(true);
+    });
   });
 
   describe("invalid configs are rejected", () => {

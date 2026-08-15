@@ -63,7 +63,8 @@ export interface ToolCallGateInputs {
  * - bash-command extraction and single `BashProgram.parse` (#308)
  * - `ToolPreviewFormatter` construction from `getToolPreviewLimits()`
  * - infrastructure-dir list from `getInfrastructureReadDirs()`
- * - all six gate producers in their prescribed order
+ * - full-policy mode: all six gate producers in their prescribed order
+ * - dialog-fallback mode: only the final tool gate, producing one dialog
  * - the run loop that returns the first block outcome, or allow
  */
 export class ToolCallGatePipeline {

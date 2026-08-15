@@ -1,5 +1,8 @@
 # Migration guide: forwarded asks and the bounded-delegation checkpoint
 
+> **Hooks-first status:** This guide records historical full-policy and authorizer-chain behavior.
+> The current production composition leaves `authorizerChain` dormant and sends a forwarded hook ask or deferral to the serving session's serialized dialog.
+
 Starting with the release that closes #635, a permission request forwarded up from a subagent carries the **child-fixed access facts** through to the authorizer chain.
 As a side effect, the bounded-delegation checkpoint now applies to forwarded asks the same way it already applied to local ones.
 This is a **breaking change** for one narrow configuration.

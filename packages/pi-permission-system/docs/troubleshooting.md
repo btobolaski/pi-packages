@@ -1,59 +1,103 @@
 # Troubleshooting
 
-## Common Issues
+## Every Tool Call Opens a Dialog
 
-| Problem                                                           | Cause                                                             | Solution                                                                                                                                          |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Config not applied (everything asks)                              | File not found or parse error                                     | Verify the global config at `~/.pi/agent/extensions/pi-permission-system/config.json` (respects `PI_CODING_AGENT_DIR`); check for trailing commas |
-| Per-agent override not applied                                    | Frontmatter parsing issue                                         | Ensure `---` delimiters at file top; keep YAML simple; restart session                                                                            |
-| Tool blocked as unregistered                                      | Unknown tool name                                                 | Use a registered `mcp` tool for server tools: `{ "tool": "server:tool" }`                                                                         |
-| `/skill:<name>` blocked                                           | Deny policy or confirmation unavailable                           | Check merged `skill` policy (global/project/agent layers). `ask` still requires UI or forwarded confirmation.                                     |
-| External file path blocked                                        | `external_directory` is `ask` without UI or `deny`                | Allow/ask the permission or keep file tools inside the active working directory.                                                                  |
-| Spurious external-path prompt for `cd <subdir> && grep … ../path` | Relative path was resolved against cwd instead of the `cd` target | Fixed in current version — paths after a leading `cd <subdir> &&` are resolved against the cd target, matching actual shell behavior.             |
-| Permission prompt is too verbose                                  | Generic extension tool input is large                             | Built-in file tools are summarized automatically; third-party tools are capped to a bounded one-line JSON preview.                                |
+This is the expected fallback when no matching hook returns `allow`.
+Confirm that the global config exists, passes strict validation, and contains a `hooks.PreToolUse` matcher for the translated tool name.
+Enable `permissionReviewLog` and inspect `permission_request.hook_diagnostic` entries for timeout, spawn, invalid-output, and non-zero-exit deferrals.
 
-## Diagnostic Logging
+An old `permission` allow rule does not suppress the dialog in the hooks-first runtime.
 
-Enable `"debugLog": true` in your config to write verbose diagnostics to `logs/pi-permission-system-debug.jsonl`.
+## Hooks Do Not Run
 
-On every session start, the extension emits a `config.resolved` entry to both logs listing the resolved config paths and whether each exists.
-This makes it easy to verify which files the extension actually loaded:
+Check these conditions:
 
-```jsonc
+1. The matcher is a valid regular expression.
+2. The matcher targets the translated Claude Code-compatible name, such as `Bash`, `Read`, or `mcp__server__tool`.
+3. The hook command is non-empty and executable through `sh -c`.
+4. A trusted project is required before project-scoped hooks are loaded.
+5. A higher-precedence project `hooks` value replaces the complete global hook set.
+
+Use a matcher of `.*` temporarily to distinguish a name mismatch from a command failure.
+Hook commands require a POSIX-compatible `sh` on `PATH`; stock Windows needs Git Bash, MSYS2, or another compatible shell.
+
+## Hook Failure Opens the Dialog
+
+Timeouts, spawn failures, malformed JSON, empty output, and non-zero exits other than `2` intentionally defer.
+This direction is fail-safe because a broken hook cannot silently grant authority.
+
+Exit code `2` is the exception: it blocks the tool and uses standard error as the denial reason.
+
+## `allowLocalEdits` Does Not Approve an Edit
+
+This is intentional.
+`allowLocalEdits` only changes the hook input's `permission_mode` from `default` to `acceptEdits`.
+The hook must still return `allow` for the edit to bypass the dialog.
+
+## `yoloMode` Still Shows Dialogs
+
+This is intentional in this fork.
+`yoloMode` sends `permission_mode: "bypassPermissions"` to hooks but does not auto-approve tool calls.
+
+## Old Web Access Settings Do Nothing
+
+`allowWebAccess` and `allowedFetchDomains` are accepted only so old config files remain valid.
+Move web-search and fetch-domain decisions into the `PreToolUse` hook.
+
+## Policy, Shell Aliases, or Authorizer Chains Do Nothing
+
+`permission`, `piInfrastructureReadPaths`, `shellTools`, and `authorizerChain` are compatibility fields and do not grant or deny production tool calls.
+Remove them after migrating their intent into the hook implementation.
+
+## Several Dialogs Replace One Another
+
+The extension serializes permission transactions in FIFO order.
+If replacement still occurs, verify that only one copy of the extension is loaded.
+Check project and global Pi settings for duplicate source and npm entries.
+
+## A Prompt Remains After a Session Switch
+
+Session teardown aborts the active inline prompt and clears queued prompts.
+If an external frontend keeps displaying a stale selection UI, reload that frontend; non-TUI selection surfaces may not expose a programmatic dismissal API.
+
+## A Headless Call Is Blocked
+
+A hook `allow` can approve a headless call.
+A hook `ask` or `defer` requires a user-granted session rule, a serving parent session for subagent forwarding, or an interactive UI.
+Without one of those authorities, the request fails closed.
+
+## A Subagent Waits for Permission
+
+Confirm that the parent session is active and serving its forwarding inbox.
+For out-of-process children, confirm that `PI_SUBAGENT_PARENT_SESSION` is set to the parent session ID.
+`forwardingTimeoutMs` bounds unanswered forwarding waits; an in-process target known not to be serving fails earlier.
+
+## Config Is Rejected
+
+The config schema is strict.
+An unknown field rejects that scope and leaves calls on the dialog fallback path.
+Use `schemas/permissions.schema.json` for editor validation and compare against `config/config.example.json`.
+
+## Logs
+
+Enable:
+
+```json
 {
-  "event": "config.resolved",
-  "globalConfigPath": "/…/.pi/agent/extensions/pi-permission-system/config.json",
-  "globalConfigExists": true,
-  "projectConfigPath": "/…/my-project/.pi/extensions/pi-permission-system/config.json",
-  "projectConfigExists": false,
-  "agentsDir": "/…/.pi/agent/agents",
-  "agentsDirExists": true,
-  "projectAgentsDir": "/…/my-project/.pi/agents",
-  "projectAgentsDirExists": false,
-  "legacyGlobalPolicyDetected": false,
-  "legacyProjectPolicyDetected": false,
-  "legacyExtensionConfigDetected": false
+  "debugLog": true,
+  "permissionReviewLog": true
 }
 ```
 
+Logs live under `extensions/pi-permission-system/logs` in the active Pi agent directory.
+Review-log values are shortened at `reviewLogFieldMaxWidth`, which defaults to 1000 characters.
+A value bound to a sensitive key name is masked; a secret embedded inside a command string is not.
+
 ## Threat Model
 
-**Goal:** Enforce policy at the host level, not the model level.
+The extension enforces hook decisions and interactive fallback at the host level rather than asking the model to police itself.
+A hook can block a dangerous operation before execution, and an internal error blocks fail-closed.
 
-**What this stops:**
-
-- Agent calling tools it shouldn't use (e.g., `write`, dangerous `bash`)
-- Tool switching attempts (calling non-existent tool names)
-- Accidental escalation via skill loading
-- Unapproved path-bearing tool access outside the active working directory when `external_directory` is `ask` or `deny`
-
-**Limitations:**
-
-- If a dangerous action is possible via an allowed tool, policy must explicitly restrict it
-- This is a permission decision layer, not a sandbox — for true isolation see [Agent Sandboxes](https://engine.build/lab/agent-sandboxes)
-- The review log records bash command strings unredacted.
-  Log files are created owner-only (`0600`), and values bound to a sensitive key name (`authorization`, `token`, `password`, …) are masked — but a secret embedded in a command string is not.
-  Review-log values are shortened at `reviewLogFieldMaxWidth` (1000 characters by default), which bounds the file's growth but is a length cap, not redaction.
-  See [Log file sensitivity](configuration.md#log-file-sensitivity) and [ADR 0010].
-
-[ADR 0010]: https://github.com/gotgenes/pi-packages/blob/main/packages/pi-permission-system/docs/decisions/0010-permission-log-secret-exposure.md
+This remains a permission decision layer, not a sandbox.
+A dangerous action that an allowed hook explicitly approves is not isolated or contained.
+Use an operating-system or container sandbox when execution isolation is required.

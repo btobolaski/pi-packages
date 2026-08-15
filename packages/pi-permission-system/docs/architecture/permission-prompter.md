@@ -13,10 +13,12 @@
    The denied entry's `resolution` is the decision state, or `confirmation_unavailable` when the decision carries that marker — a `DenyingAuthorizer` denial, i.e. no live authority was reachable (a no-UI, non-subagent session) ([#556]).
 
 Only the outcome entries carry `decidedBy`; the waiting entry does not, because nothing has decided yet and a `null` there would read as decided-by-nobody.
-The prompter records what the decision states rather than deriving it — which is what lets one entry distinguish a human at the dialog, a chain link, an unreachable authority, and another session's answer, where the shape alone cannot.
+The prompter records what the decision states rather than deriving it, which lets one entry distinguish a human at the dialog, an unreachable authority, and another session's answer.
 
-Yolo-mode auto-approval is resolved upstream: at the composition stage (`PermissionManager.check`'s `rewriteAsksToYolo`) for a rule-driven ask, and at `GateRunner`'s auto-approve fast path (`resolveYoloGrant`) for an ask synthesized after resolution, which no rule rewrite can reach ([#712]).
-An `ask` never reaches this class under yolo, so `PermissionPrompter` has no yolo-mode knowledge.
+`PreToolUseHookGate` resolves hook `allow` and `deny` before an ask reaches this class.
+The dialog fallback resolver preserves user session grants and converts every other production tool result to `ask`; yolo rewriting is disabled in the composition root.
+`LocalUserAuthorizer` admits the complete prompt transaction through `SerialInteractivePromptQueue`, so the UI-prompt broadcast occurs only when that transaction reaches the front of the queue.
+Session teardown invalidates the queue, and the inline prompt observes the queue's abort signal so its active component also settles.
 
 ## Why a class instead of a free function
 
@@ -63,15 +65,27 @@ interface Authorizer {
 
 ```typescript
 const prompter = new PermissionPrompter({ logger });
+const promptQueue = new SerialInteractivePromptQueue();
 
 const authorizerSelection = new AuthorizerSelection({
   detection: subagentDetection,
   events: pi.events,
-  requestPermissionDecisionFromUi,
+  getPromptPreferences: () => ({
+    doublePressToConfirm: configStore.current().doublePressToConfirm,
+    budget: resolveRenderBudget(configStore.current()),
+  }),
+  promptQueue,
+  requestPermissionDecision,
   forwardingDir: paths.forwardingDir,
   registry: subagentRegistry,
+  servingRegistry,
+  getForwardingTimeoutMs: () =>
+    configStore.current().forwardingTimeoutMs ?? PERMISSION_FORWARDING_TIMEOUT_MS,
   logger,
   prompter,
+  getPermissionQuery: () => permissionsService,
+  authorizerRegistry,
+  getAuthorizerChain: () => [],
 });
 ```
 
@@ -82,4 +96,3 @@ The Authorizer spine is entirely behind that seam.
 [#555]: https://github.com/gotgenes/pi-packages/issues/555
 [#556]: https://github.com/gotgenes/pi-packages/issues/556
 [#726]: https://github.com/gotgenes/pi-packages/issues/726
-[#712]: https://github.com/gotgenes/pi-packages/issues/712

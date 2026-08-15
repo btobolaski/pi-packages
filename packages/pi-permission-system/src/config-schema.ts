@@ -64,7 +64,8 @@ const preToolUseHookCommandSchema = z.strictObject({
       "Optional Tool(pattern) condition evaluated against the tool input.",
   }),
   command: z.string().trim().min(1).meta({
-    description: "Shell command executed for this hook.",
+    description:
+      "POSIX shell command executed through sh -c. Windows requires a compatible sh executable on PATH.",
   }),
   timeout: z.number().positive().optional().meta({
     description: "Hook timeout in seconds. Defaults to 10 seconds.",
@@ -129,7 +130,7 @@ const permissionSchema = z
     description:
       "Flat permission policy. Each key is a surface name; values are a PermissionState string (catch-all) or a pattern→action map.",
     markdownDescription:
-      'Flat permission policy.\n\nEach top-level key is a surface name:\n- `"*"` — universal fallback (replaces `defaultPolicy.tools` from the legacy format)\n- Tool names (`read`, `write`, `bash`, `mcp`, `skill`, `external_directory`, `path`, etc.)\n\nA **string** value is shorthand for `{ "*": action }` (surface-level catch-all).\nAn **object** value maps wildcard patterns to actions — last matching pattern wins.\n\nFor built-in file tools (`read`, `write`, `edit`, `find`, `grep`, `ls`), patterns are matched against the file path from `input.path`. For example, `"read": { "*": "allow", "*.env": "deny" }` allows reads but denies `.env` files.\n\nWhen Pi\'s current working directory is known, relative path inputs also match their cwd-normalized absolute form, so `src/App.jsx` can match both `src/*` and `/workspace/project/*`. Bash path tokens use the effective directory after literal `cd` commands for this matching; non-literal `cd "$DIR"` style commands remain conservative.\n\nThe `path` surface is a cross-cutting gate that applies to **all** file access: Pi tools, bash commands, MCP calls (via `input.arguments.path`), and extension tools (via `input.path` or a registered access extractor). A `path` deny cannot be overridden by a per-tool allow. Use it to protect sensitive files (`.env`, `~/.ssh/*`) from all path-aware tools at once.\n\nThe `external_directory` surface gates access **outside** the working directory. Give it a pattern map to allow specific outside-CWD directories without opening all external access — e.g. `"external_directory": { "*": "ask", "~/.cargo/registry/*": "allow" }` to silence repeated prompts on a local cache. The trailing `*` is greedy and crosses subdirectory boundaries; a bare `~/.cargo/registry` matches only the directory entry itself. Because layers compose with most-restrictive-wins, a `path` allow cannot loosen an `external_directory: ask` boundary — allow outside-CWD directories here, not on `path`.\n\n**Merge order (lowest → highest precedence):** global → project → per-agent frontmatter.',
+      '**Retained-engine compatibility:** The hooks-first production composition parses this policy for inspection and migration but does not use it to authorize or deny tool calls. The behavior below applies only to full-policy consumers.\n\nFlat permission policy.\n\nEach top-level key is a surface name:\n- `"*"` — universal fallback (replaces `defaultPolicy.tools` from the legacy format)\n- Tool names (`read`, `write`, `bash`, `mcp`, `skill`, `external_directory`, `path`, etc.)\n\nA **string** value is shorthand for `{ "*": action }` (surface-level catch-all).\nAn **object** value maps wildcard patterns to actions — last matching pattern wins.\n\nFor built-in file tools (`read`, `write`, `edit`, `find`, `grep`, `ls`), patterns are matched against the file path from `input.path`. For example, `"read": { "*": "allow", "*.env": "deny" }` allows reads but denies `.env` files.\n\nWhen Pi\'s current working directory is known, relative path inputs also match their cwd-normalized absolute form, so `src/App.jsx` can match both `src/*` and `/workspace/project/*`. Bash path tokens use the effective directory after literal `cd` commands for this matching; non-literal `cd "$DIR"` style commands remain conservative.\n\nThe `path` surface is a cross-cutting gate that applies to **all** file access: Pi tools, bash commands, MCP calls (via `input.arguments.path`), and extension tools (via `input.path` or a registered access extractor). A `path` deny cannot be overridden by a per-tool allow. Use it to protect sensitive files (`.env`, `~/.ssh/*`) from all path-aware tools at once.\n\nThe `external_directory` surface gates access **outside** the working directory. Give it a pattern map to allow specific outside-CWD directories without opening all external access — e.g. `"external_directory": { "*": "ask", "~/.cargo/registry/*": "allow" }` to silence repeated prompts on a local cache. The trailing `*` is greedy and crosses subdirectory boundaries; a bare `~/.cargo/registry` matches only the directory entry itself. Because layers compose with most-restrictive-wins, a `path` allow cannot loosen an `external_directory: ask` boundary — allow outside-CWD directories here, not on `path`.\n\n**Merge order (lowest → highest precedence):** global → project → per-agent frontmatter.',
     examples: [
       {
         "*": "ask",
@@ -182,7 +183,7 @@ const shellToolsSchema = z
     description:
       "Maps non-bash tool names that carry shell semantics to the input arguments holding their command and working directory.",
     markdownDescription:
-      'Records which non-`bash` tools carry shell semantics, mapping each tool name to the input argument holding its command (and optionally its working directory).\n\nUse this when an extension replaces the native `bash` tool under a different name — e.g. `@howaboua/pi-codex-conversion` registers `exec_command` with a `cmd` argument and an optional `workdir`. Recording the alias lets the permission system gate that tool through the same bash enforcement stack as native `bash` (command decomposition, wrapper flooring, path/external-directory token gates, and `bash:` rules).\n\nExample:\n\n```json\n"shellTools": {\n  "exec_command": { "commandArgument": "cmd", "workdirArgument": "workdir" }\n}\n```\n\n**Merge order:** shallow-merge by tool name across global → project. A project entry overrides a specific tool\'s mapping on key collision but never drops a global entry.',
+      '**Retained-engine compatibility:** The hooks-first production composition accepts this map but does not activate shell aliases. The behavior below applies only to full-policy consumers.\n\nRecords which non-`bash` tools carry shell semantics, mapping each tool name to the input argument holding its command (and optionally its working directory).\n\nUse this when an extension replaces the native `bash` tool under a different name — e.g. `@howaboua/pi-codex-conversion` registers `exec_command` with a `cmd` argument and an optional `workdir`. Recording the alias lets the permission system gate that tool through the same bash enforcement stack as native `bash` (command decomposition, wrapper flooring, path/external-directory token gates, and `bash:` rules).\n\nExample:\n\n```json\n"shellTools": {\n  "exec_command": { "commandArgument": "cmd", "workdirArgument": "workdir" }\n}\n```\n\n**Merge order:** shallow-merge by tool name across global → project. A project entry overrides a specific tool\'s mapping on key collision but never drops a global entry.',
     examples: [
       {
         exec_command: { commandArgument: "cmd", workdirArgument: "workdir" },
@@ -220,15 +221,25 @@ export const unifiedConfigSchema = z
     }),
     yoloMode: z.boolean().optional().meta({
       description:
-        "Auto-approve ask-state permission checks, including subagent approval forwarding.",
+        "Select the bypassPermissions permission mode passed to PreToolUse hooks. This setting does not auto-approve tool calls.",
       markdownDescription:
-        "Auto-approve `ask`-state permission checks, including subagent approval forwarding.\n\n⚠️ **Use with caution** — this disables all interactive confirmation prompts.",
+        'Send `permission_mode: "bypassPermissions"` to PreToolUse hooks. This field does not auto-approve tool calls; the hook must still return `allow`.',
       default: false,
     }),
     allowLocalEdits: z.boolean().optional().meta({
       description:
         "Select the acceptEdits permission mode passed to PreToolUse hooks. This setting does not auto-approve tool calls.",
       default: false,
+    }),
+    allowWebAccess: z.boolean().optional().meta({
+      description:
+        "Deprecated compatibility field. Accepted but ignored; web access is decided by PreToolUse hooks or the dialog.",
+      default: false,
+    }),
+    allowedFetchDomains: z.array(z.string().trim().min(1)).optional().meta({
+      description:
+        "Deprecated compatibility field. Accepted but ignored; domains do not bypass hooks or the dialog.",
+      default: [],
     }),
     hooks: hooksSchema.optional(),
     doublePressToConfirm: z.boolean().optional().meta({
@@ -282,27 +293,29 @@ export const unifiedConfigSchema = z
     }),
     piInfrastructureReadPaths: z.array(z.string().min(1)).optional().meta({
       description:
-        "Additional directories to auto-allow for reads as Pi infrastructure, bypassing the external_directory gate. Supports ~ expansion and wildcard patterns (* and ?).",
-      markdownDescription:
-        "Additional directories to auto-allow for reads as Pi infrastructure, bypassing the `external_directory` gate.\n\nThe extension auto-discovers the global node_modules root (walks up from the extension's install path; falls back to `npm root -g` from a dev checkout), Pi's own install directory (via the coding-agent `getPackageDir()` API), `agentDir`, `agentDir/git`, and project-local `.pi/npm/` and `.pi/git/`. Add entries here for edge cases where auto-discovery is insufficient (e.g. custom `npmCommand` pointing to pnpm).\n\nSupports `~`/`$HOME` expansion. Entries may be plain directory prefixes or wildcard patterns using `*` (matches any characters, including `/`) and `?` (matches exactly one character). `**` and `*` are equivalent — both cross directory boundaries.\n\nOn Windows, matching is case-insensitive and tolerant of either path separator.",
+        "Compatibility field retained from the deterministic policy engine. Accepted but ignored by the hooks-first tool-call runtime.",
       default: [],
     }),
     authorizerChain: z.array(z.string().min(1)).optional().meta({
       description:
-        "Ordered names of registered live-authority chain links to consult before the terminal authorizer. Config order (not registration order) fixes the chain order; an unregistered name is skipped fail-safe (more prompting, never less); a link decides nothing until it is named here.",
-      markdownDescription:
-        "Ordered names of registered **live-authority chain links** (e.g. a model judge) to consult before the terminal authorizer (the human, or the subagent-forwarding / headless-deny fallback).\n\nA link reviews an `ask` and returns `allow` / `deny` (with an optional teaching reason) / `defer` to the next link. Three invariants govern the chain:\n\n- **Config order wins.** The order here \u2014 not the order extensions register in \u2014 fixes the security-relevant chain order.\n- **Fail-safe skip.** A name with no registered link is skipped with a warning; the `ask` still reaches the terminal (more prompting, never less).\n- **Opt-in activation.** Installing a judge extension grants it no authority; a link decides nothing until you name it here.\n\nThe chain owner caps every verdict with a bounded-delegation checkpoint: a link's `allow` on an excluded surface (`external_directory` or `path`) is downgraded to `defer`, so a link cannot exceed your policy.\n\nDefaults to an empty list (no links).",
+        "Compatibility field retained from the upstream authorizer chain. Accepted but ignored by the hooks-first runtime.",
       default: [],
     }),
-    permission: permissionSchema.optional(),
-    shellTools: shellToolsSchema.optional(),
+    permission: permissionSchema.optional().meta({
+      description:
+        "Compatibility policy retained for inspection and migration. It does not authorize or deny production tool calls.",
+    }),
+    shellTools: shellToolsSchema.optional().meta({
+      description:
+        "Compatibility field retained from upstream shell aliases. Accepted but ignored by the hooks-first runtime.",
+    }),
   })
   .meta({
     title: "PI Permission System Configuration",
     description:
-      "Unified config file combining runtime knobs and flat permission policy for pi-permission-system.",
+      "Hooks-first permission configuration for pi-permission-system.",
     markdownDescription:
-      "Unified config file combining runtime knobs and flat permission policy for [pi-permission-system](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system).\n\nPlace at `~/.pi/agent/extensions/pi-permission-system/config.json` (global) or `<project>/.pi/extensions/pi-permission-system/config.json` (project).",
+      "Hooks-first configuration for [pi-permission-system](https://github.com/gotgenes/pi-packages/tree/main/packages/pi-permission-system). PreToolUse hooks are the only automatic tool-call authority; unmatched or deferred calls reach the dialog.\n\nPlace at `~/.pi/agent/extensions/pi-permission-system/config.json` (global) or `<project>/.pi/extensions/pi-permission-system/config.json` (project).",
   });
 
 /** A permission decision. */

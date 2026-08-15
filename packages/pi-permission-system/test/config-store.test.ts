@@ -351,6 +351,11 @@ describe("ConfigStore", () => {
         expect.stringContaining('"allowLocalEdits": false'),
         "utf-8",
       );
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        expect.stringContaining(".tmp"),
+        expect.stringContaining('"doublePressToConfirm": true'),
+        "utf-8",
+      );
       expect(mockRenameSync).toHaveBeenCalled();
     });
 

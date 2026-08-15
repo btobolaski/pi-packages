@@ -152,6 +152,15 @@ describe("normalizePermissionSystemConfig", () => {
     expect("hooks" in result).toBe(false);
   });
 
+  it("ignores deprecated web-access compatibility fields", () => {
+    const result = normalizePermissionSystemConfig({
+      allowWebAccess: true,
+      allowedFetchDomains: ["example.com"],
+    });
+    expect(result).not.toHaveProperty("allowWebAccess");
+    expect(result).not.toHaveProperty("allowedFetchDomains");
+  });
+
   it("defaults doublePressToConfirm to true when missing", () => {
     const result = normalizePermissionSystemConfig({});
     expect(result.doublePressToConfirm).toBe(true);

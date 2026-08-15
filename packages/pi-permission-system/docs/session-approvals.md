@@ -1,13 +1,14 @@
 # Session-Scoped Approvals
 
-When any permission resolves to `ask`, the permission dialog offers four options:
+When a `PreToolUse` hook asks or defers and no existing user session grant matches, the permission dialog offers four options:
 
 ```text
 Yes | Yes, allow "<pattern>" for this session | No | No, provide reason
 ```
 
 Selecting **Yes, allow "\<pattern\>" for this session** approves the current request and records the suggested wildcard pattern as a session rule.
-Subsequent requests that match the pattern skip the prompt for the remainder of the session.
+Subsequent requests that match the pattern skip the prompt for the remainder of the session after their hooks run.
+A later hook denial remains authoritative and blocks the request.
 
 Session approvals are ephemeral — they are never persisted to disk and are cleared on `session_shutdown`.
 

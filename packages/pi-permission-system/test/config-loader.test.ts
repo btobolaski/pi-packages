@@ -131,6 +131,30 @@ describe("loadUnifiedConfig", () => {
     });
   });
 
+  it("loads hooks alongside ignored legacy web-access fields", () => {
+    const configPath = join(tempDir, "config.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        allowWebAccess: true,
+        allowedFetchDomains: ["example.com"],
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: ".*",
+              hooks: [{ type: "command", command: "policy-check" }],
+            },
+          ],
+        },
+      }),
+    );
+
+    const result = loadUnifiedConfig(configPath);
+
+    expect(result.issues).toEqual([]);
+    expect(result.config.hooks?.PreToolUse).toHaveLength(1);
+  });
+
   it("strips JSONC comments before parsing", () => {
     const configPath = join(tempDir, "config.json");
     writeFileSync(
@@ -929,6 +953,35 @@ describe("loadAndMergeConfigs", () => {
 
       // The untrusted project's `bash: allow` must not override global `deny`.
       expect(result.merged.permission).toEqual({ "*": "ask", bash: "deny" });
+      expect(result.project).toEqual({});
+    });
+
+    it("preserves global hooks when untrusted project hooks are omitted", () => {
+      const globalHooks = {
+        PreToolUse: [
+          {
+            matcher: "Bash",
+            hooks: [{ type: "command" as const, command: "global-check" }],
+          },
+        ],
+      };
+      writeGlobal({ hooks: globalHooks });
+      writeProject({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: ".*",
+              hooks: [{ type: "command", command: "project-check" }],
+            },
+          ],
+        },
+      });
+
+      const result = loadAndMergeConfigs(agentDir, cwd, extensionRoot, {
+        includeProjectScope: false,
+      });
+
+      expect(result.merged.hooks).toEqual(globalHooks);
       expect(result.project).toEqual({});
     });
 

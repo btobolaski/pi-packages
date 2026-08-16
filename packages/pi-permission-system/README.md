@@ -27,6 +27,7 @@ deny > ask > allow > defer
 
 The hook always runs before session approvals, so a later hook denial can still stop a previously approved pattern.
 Configured `permission`, `shellTools`, `authorizerChain`, and yolo policy behavior do not bypass this flow.
+An explicit `/skill:<name>` invocation is user input, not a tool call, and is not permission-gated; tool calls made afterward still follow the flow above.
 An unexpected internal exception still fails closed and blocks the tool call.
 
 ## Install

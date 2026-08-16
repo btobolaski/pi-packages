@@ -18,10 +18,6 @@ import { DEFAULT_EXTENSION_CONFIG } from "#src/extension-config";
 import type { PreToolUseHookEvaluator } from "#src/handlers/gates/pre-tool-use-hook-gate";
 import { GateRunner } from "#src/handlers/gates/runner";
 import {
-  type SkillInputGateInputs,
-  SkillInputGatePipeline,
-} from "#src/handlers/gates/skill-input-gate-pipeline";
-import {
   type ToolCallGateInputs,
   ToolCallGatePipeline,
 } from "#src/handlers/gates/tool-call-gate-pipeline";
@@ -41,26 +37,20 @@ import {
 // ── MockGateHandlerSession ────────────────────────────────────────────────
 
 /**
- * Mock type for gate-pipeline inputs (ToolCallGateInputs + SkillInputGateInputs).
+ * Mock type for tool-call gate inputs and permission-check overrides.
  *
  * Used by `makeSurfaceCheck`, `makeBashCommandCheck`, and the `session`
- * override bag in `makeHandler`.  The `GateHandlerSession` role (activate +
- * resolveAgentName) is now satisfied by the real `PermissionSession`; this
- * type covers only the pipeline input surface.
- *
- * The 4-arg `checkPermission` is a superset of `SkillInputGateInputs` —
- * it routes through `permissionManager.checkPermission` in production.
+ * override bag in `makeHandler`.
  */
-export type MockGateHandlerSession = ToolCallGateInputs &
-  SkillInputGateInputs & {
-    /** 4-arg form so surface-check mocks can receive optional rules. */
-    checkPermission(
-      surface: string,
-      input: unknown,
-      agentName?: string,
-      rules?: Rule[],
-    ): PermissionCheckResult;
-  };
+export type MockGateHandlerSession = ToolCallGateInputs & {
+  /** 4-arg form so surface-check mocks can receive optional rules. */
+  checkPermission(
+    surface: string,
+    input: unknown,
+    agentName?: string,
+    rules?: Rule[],
+  ): PermissionCheckResult;
+};
 
 // ── Small utility factories ───────────────────────────────────────────────
 
@@ -318,7 +308,6 @@ export function makeHandler(overrides?: {
 
   const recorder = new SessionRules();
   const pipeline = new ToolCallGatePipeline(resolver, session);
-  const skillInputPipeline = new SkillInputGatePipeline(resolver);
   const reporter = new GateDecisionReporter(logger, events);
   const prompter: AskEscalator = overrides?.prompter ?? {
     escalate: vi
@@ -340,7 +329,6 @@ export function makeHandler(overrides?: {
     session,
     toolRegistry,
     pipeline,
-    skillInputPipeline,
     runner,
     preToolUseHooks,
   );

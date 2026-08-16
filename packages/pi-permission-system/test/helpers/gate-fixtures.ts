@@ -8,7 +8,6 @@ import type { DecisionReporter } from "#src/decision-reporter";
 import type { DenialContext } from "#src/denial-messages";
 import type { GateDescriptor } from "#src/handlers/gates/descriptor";
 import { GateRunner } from "#src/handlers/gates/runner";
-import type { SkillInputGateInputs } from "#src/handlers/gates/skill-input-gate-pipeline";
 import type { ToolCallGateInputs } from "#src/handlers/gates/tool-call-gate-pipeline";
 import type { ToolCallContext } from "#src/handlers/gates/types";
 import { pathFlavorForPlatform } from "#src/path/path-flavor";
@@ -287,36 +286,5 @@ export function makeGateInputs(
     getShellToolAliases:
       overrides.getShellToolAliases ??
       vi.fn<() => ShellToolsConfig | undefined>(() => undefined),
-  };
-}
-
-/**
- * Mock of `SkillInputGateInputs` for `SkillInputGatePipeline` unit tests.
- *
- * Returns a plain object with a `checkPermission` `vi.fn()` stub so callers
- * retain full mock access (`mockReturnValue`, `mock.calls`, etc.).
- */
-export function makeSkillInputInputs(
-  overrides: { checkPermission?: SkillInputGateInputs["checkPermission"] } = {},
-): SkillInputGateInputs {
-  return {
-    checkPermission:
-      overrides.checkPermission ??
-      vi
-        .fn<SkillInputGateInputs["checkPermission"]>()
-        .mockReturnValue(makeCheckResult()),
-  };
-}
-
-/**
- * Mock `GateNotifier` for `SkillInputGatePipeline` unit tests.
- *
- * Return type is intentionally unannotated so callers retain full `vi.fn()`
- * mock access (`mock.calls`, `toHaveBeenCalledWith`, etc.) — annotating with
- * `GateNotifier` would erase `Mock<...>` methods from the inferred type.
- */
-export function makeNotifier() {
-  return {
-    warn: vi.fn<(message: string) => void>(),
   };
 }

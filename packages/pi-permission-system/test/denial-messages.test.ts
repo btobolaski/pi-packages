@@ -356,31 +356,6 @@ describe("formatDenyReason", () => {
       );
     });
   });
-
-  describe("skill_input context", () => {
-    test("without agent", () => {
-      expect(
-        formatDenyReason({
-          kind: "skill_input",
-          skillName: "librarian",
-        }),
-      ).toBe(
-        "[pi-permission-system] Current agent is not permitted to access skill 'librarian'.",
-      );
-    });
-
-    test("with agent", () => {
-      expect(
-        formatDenyReason({
-          kind: "skill_input",
-          skillName: "librarian",
-          agentName: "my-agent",
-        }),
-      ).toBe(
-        "[pi-permission-system] Agent 'my-agent' is not permitted to access skill 'librarian'.",
-      );
-    });
-  });
 });
 
 // ── formatUnavailableReason ────────────────────────────────────────────────
@@ -497,17 +472,6 @@ describe("formatUnavailableReason", () => {
         kind: "skill_read",
         skillName: "librarian",
         readPath: "/skills/librarian/SKILL.md",
-      }),
-    ).toBe(
-      "[pi-permission-system] Accessing skill 'librarian' requires approval, but no interactive UI is available.",
-    );
-  });
-
-  test("skill_input", () => {
-    expect(
-      formatUnavailableReason({
-        kind: "skill_input",
-        skillName: "librarian",
       }),
     ).toBe(
       "[pi-permission-system] Accessing skill 'librarian' requires approval, but no interactive UI is available.",
@@ -701,32 +665,6 @@ describe("formatUserDeniedReason", () => {
         ),
       ).toBe(
         "[pi-permission-system] User denied access to skill 'librarian'. Reason: not needed.",
-      );
-    });
-  });
-
-  describe("skill_input context", () => {
-    test("without agent and without reason", () => {
-      expect(
-        formatUserDeniedReason({
-          kind: "skill_input",
-          skillName: "librarian",
-        }),
-      ).toBe("[pi-permission-system] User denied access to skill 'librarian'.");
-    });
-
-    test("with agent and with reason", () => {
-      expect(
-        formatUserDeniedReason(
-          {
-            kind: "skill_input",
-            skillName: "librarian",
-            agentName: "code-agent",
-          },
-          "not permitted",
-        ),
-      ).toBe(
-        "[pi-permission-system] User denied access to skill 'librarian'. Reason: not permitted.",
       );
     });
   });

@@ -74,14 +74,6 @@ export function formatAskPrompt(
   return `${subject} requested tool '${result.toolName}'${patternInfo}${inputSuffix}. Allow this call?`;
 }
 
-export function formatSkillAskPrompt(
-  skillName: string,
-  agentName?: string,
-): string {
-  const subject = agentName ? `Agent '${agentName}'` : "Current agent";
-  return `${subject} requested skill '${skillName}'. Allow loading this skill?`;
-}
-
 export function formatSkillPathAskPrompt(
   skill: SkillPromptEntry,
   readPath: string,

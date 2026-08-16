@@ -26,7 +26,7 @@ The following concepts are shared between OpenCode and this extension:
 | Home directory expansion      | `~/`, `$HOME/`, and `${HOME}/` expand to the OS home directory in patterns                                      |
 | `external_directory` surface  | Gates access to paths outside the working directory                                                             |
 | `bash` surface                | Command patterns matched against shell commands                                                                 |
-| `skill` surface               | Skill name patterns matched against skill invocations                                                           |
+| `skill` surface               | Retained skill-name pattern data; explicit invocations are ungated in hooks-first production                    |
 | `task` surface                | Gates subagent/delegation tool calls                                                                            |
 | Session-scoped approvals      | `once` / `always` / `reject` from the ask dialog; `always` adds a session rule                                  |
 | Per-agent overrides           | Override global permissions for specific agents                                                                 |

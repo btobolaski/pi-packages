@@ -9,7 +9,6 @@ import { vi } from "vitest";
 import type { AskEscalator } from "#src/authority/authorizer-selection";
 import { GateDecisionReporter } from "#src/decision-reporter";
 import { GateRunner } from "#src/handlers/gates/runner";
-import { SkillInputGatePipeline } from "#src/handlers/gates/skill-input-gate-pipeline";
 import { ToolCallGatePipeline } from "#src/handlers/gates/tool-call-gate-pipeline";
 import { PermissionGateHandler } from "#src/handlers/permission-gate-handler";
 import type { ScopedPermissionManager } from "#src/permission-manager";
@@ -229,7 +228,6 @@ export function makeDedupWiring(prompter?: AskEscalator) {
         ]),
     }),
     new ToolCallGatePipeline(resolver, session),
-    new SkillInputGatePipeline(resolver),
     runner,
     { evaluate: vi.fn().mockResolvedValue({ action: "continue" }) },
   );

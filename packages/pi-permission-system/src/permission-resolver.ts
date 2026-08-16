@@ -90,8 +90,8 @@ export class PermissionResolver
   }
 
   /**
-   * Raw permission check without session rules — the no-session-rules path
-   * consumed by `SkillInputGateInputs` / `SkillPermissionChecker`.
+   * Raw permission check without session rules, consumed by
+   * `SkillPermissionChecker` during prompt sanitization.
    *
    * Not on `ScopedPermissionResolver` (ISP: gates do not use this).
    */

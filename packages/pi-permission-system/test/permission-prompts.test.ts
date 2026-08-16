@@ -2,7 +2,6 @@ import { describe, expect, test } from "vitest";
 import {
   formatAskPrompt,
   formatMissingToolNameReason,
-  formatSkillAskPrompt,
   formatSkillPathAskPrompt,
   formatUnknownToolReason,
 } from "#src/permission-prompts";
@@ -321,20 +320,6 @@ describe("formatAskPrompt", () => {
     expect(result).toContain("task");
     expect(result).not.toContain("undefined");
     expect(result).toContain("Allow this call?");
-  });
-});
-
-describe("formatSkillAskPrompt", () => {
-  test("includes skill name and agent name", () => {
-    const result = formatSkillAskPrompt("librarian", "my-agent");
-    expect(result).toContain("librarian");
-    expect(result).toContain("Agent 'my-agent'");
-  });
-
-  test("uses 'Current agent' without agent name", () => {
-    const result = formatSkillAskPrompt("librarian");
-    expect(result).toContain("Current agent");
-    expect(result).toContain("librarian");
   });
 });
 

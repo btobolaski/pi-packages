@@ -32,7 +32,6 @@ import {
 } from "./handlers";
 import { PreToolUseHookGate } from "./handlers/gates/pre-tool-use-hook-gate";
 import { GateRunner } from "./handlers/gates/runner";
-import { SkillInputGatePipeline } from "./handlers/gates/skill-input-gate-pipeline";
 import {
   type ToolCallGateInputs,
   ToolCallGatePipeline,
@@ -277,7 +276,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     accessExtractorRegistry,
     "dialog-fallback",
   );
-  const skillInputGatePipeline = new SkillInputGatePipeline(dialogResolver);
   const preToolUseHooks = new PreToolUseHookGate(
     () => configStore.current(),
     reporter,
@@ -287,7 +285,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     session,
     toolRegistry,
     toolCallGatePipeline,
-    skillInputGatePipeline,
     gateRunner,
     preToolUseHooks,
   );
@@ -300,7 +297,6 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   );
   pi.on("session_shutdown", () => lifecycle.handleSessionShutdown());
   pi.on("before_agent_start", (event, ctx) => agentPrep.handle(event, ctx));
-  pi.on("input", (event, ctx) => gates.handleInput(event, ctx));
   pi.on(
     "tool_call",
     createFailClosedToolCall(

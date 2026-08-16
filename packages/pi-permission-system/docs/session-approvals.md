@@ -21,7 +21,6 @@ The suggested pattern is surface-specific:
 | bash                            | `git status --short`         | `git status *`            |
 | mcp (qualified)                 | `exa:search`                 | `exa:*`                   |
 | mcp (munged)                    | `exa_search`                 | `exa_*`                   |
-| skill                           | `librarian`                  | `librarian`               |
 | path                            | `src/.env`                   | `src/*`                   |
 | tool with path (read, write, …) | `read` for `src/foo.ts`      | `src/*`                   |
 | tool catch-all                  | `read` (no extractable path) | `*`                       |

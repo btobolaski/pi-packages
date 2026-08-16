@@ -340,15 +340,15 @@ pi.events.on("permissions:ui_prompt", (raw) => {
 
 ### Payload Fields
 
-| Field        | Type                             | Description                                                            |
-| ------------ | -------------------------------- | ---------------------------------------------------------------------- |
-| `requestId`  | `string`                         | Unique ID for the permission request being prompted                    |
-| `source`     | `PermissionUiPromptSource`       | Prompt origin: `"tool_call"`, `"skill_input"`, or `"skill_read"`       |
-| `surface`    | `string \| null`                 | Normalized display surface (e.g. `"bash"`, `"skill"`), when known      |
-| `value`      | `string \| null`                 | Normalized display value (command, path, skill name, etc.), when known |
-| `agentName`  | `string \| null`                 | Active/requesting agent name, when known                               |
-| `message`    | `string`                         | Message displayed in the permission prompt                             |
-| `forwarding` | `ForwardedPromptContext \| null` | Forwarding context, or `null` for a direct prompt                      |
+| Field        | Type                             | Description                                                                                                     |
+| ------------ | -------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `requestId`  | `string`                         | Unique ID for the permission request being prompted                                                             |
+| `source`     | `PermissionUiPromptSource`       | Prompt origin; `"skill_input"` is retained compatibility and is not emitted directly by the hooks-first runtime |
+| `surface`    | `string \| null`                 | Normalized display surface (e.g. `"bash"`, `"skill"`), when known                                               |
+| `value`      | `string \| null`                 | Normalized display value (command, path, skill name, etc.), when known                                          |
+| `agentName`  | `string \| null`                 | Active/requesting agent name, when known                                                                        |
+| `message`    | `string`                         | Message displayed in the permission prompt                                                                      |
+| `forwarding` | `ForwardedPromptContext \| null` | Forwarding context, or `null` for a direct prompt                                                               |
 
 Forwarding is orthogonal to origin: a forwarded subagent prompt keeps its original `source` and is identified by a non-null `forwarding` field, not by a dedicated source value.
 

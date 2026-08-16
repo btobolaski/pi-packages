@@ -1,6 +1,8 @@
-# Current Architecture
+# Historical v3 Architecture
 
-This document describes the permission system's as-is design, identifies structural strengths worth preserving, and names the debt that motivates the target architecture.
+> **Superseded:** This point-in-time v3 design predates the current [hooks-first architecture](architecture.md) and is retained for historical context.
+
+This document describes the permission system's v3 design, identifies structural strengths worth preserving, and names the debt that motivated the target architecture.
 
 ## Overview
 

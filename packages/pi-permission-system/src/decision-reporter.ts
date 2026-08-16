@@ -31,8 +31,8 @@ export interface DecisionReporter extends DecisionBroadcaster {
  * the runner has to reach through the session to its logger or close over
  * the event bus directly.
  *
- * Built once in `PermissionGateHandler`'s constructor; shared between
- * `handleToolCall` (gate runner + bypass branch) and `handleInput`.
+ * Built once in the composition root and shared by the hook gate, gate runner,
+ * tool-call boundary, and `PermissionGateHandler`.
  *
  * Answers "who owns the event bus" — the reporter does, not the session.
  */

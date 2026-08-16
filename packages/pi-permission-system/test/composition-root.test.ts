@@ -51,10 +51,9 @@ const SERVING_REGISTRY_KEY = Symbol.for(
   "@gotgenes/pi-permission-system:serving-registry",
 );
 
-/** The six events the factory must register a handler for. */
+/** Production events; user-directed input such as `/skill:` is not gated. */
 const EXPECTED_HANDLERS = [
   "before_agent_start",
-  "input",
   "resources_discover",
   "session_shutdown",
   "session_start",

@@ -1,7 +1,4 @@
-import type {
-  ExtensionContext,
-  InputEventResult,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
   formatMissingToolNameReason,
   formatUnknownToolReason,
@@ -15,26 +12,16 @@ import {
 import { toRecord } from "#src/value-guards";
 import type { PreToolUseHookEvaluator } from "./gates/pre-tool-use-hook-gate";
 import type { GateRunner } from "./gates/runner";
-import type {
-  GateNotifier,
-  SkillInputGatePipeline,
-} from "./gates/skill-input-gate-pipeline";
 import type { ToolCallGatePipeline } from "./gates/tool-call-gate-pipeline";
 import type { GateOutcome, ToolCallContext } from "./gates/types";
 
-/** Minimal subset of InputEvent used by handleInput. */
-interface InputPayload {
-  text: string;
-}
-
 /**
- * Handles permission gate events: tool_call and input.
+ * Handles tool-call permission gates.
  *
  * Constructor deps:
  * - `session` — state/lifecycle owner: bind per-event context, resolve agent name
  * - `toolRegistry` — Pi tool API subset (getAll + setActive)
  * - `pipeline` — owns tool-call gate-producer assembly and the run loop
- * - `skillInputPipeline` — owns skill-input gate assembly (pre-check, notify, run)
  * - `runner` — pre-built gate runner (constructed in the composition root)
  */
 export class PermissionGateHandler {
@@ -42,7 +29,6 @@ export class PermissionGateHandler {
     private readonly session: PermissionSession,
     private readonly toolRegistry: ToolRegistry,
     private readonly pipeline: ToolCallGatePipeline,
-    private readonly skillInputPipeline: SkillInputGatePipeline,
     private readonly runner: GateRunner,
     private readonly preToolUseHooks: PreToolUseHookEvaluator,
   ) {}
@@ -80,36 +66,6 @@ export class PermissionGateHandler {
       return hookOutcome;
     }
     return await this.pipeline.evaluate(tcc, this.runner);
-  }
-
-  async handleInput(
-    event: InputPayload,
-    ctx: ExtensionContext,
-  ): Promise<InputEventResult> {
-    this.session.activate(ctx);
-
-    const skillName = extractSkillNameFromInput(event.text);
-    if (!skillName) {
-      return { action: "continue" };
-    }
-
-    const agentName = this.session.resolveAgentName(ctx);
-    const notifier: GateNotifier = {
-      warn: (message) => {
-        if (ctx.hasUI) {
-          ctx.ui.notify(message, "warning");
-        }
-      },
-    };
-    const outcome = await this.skillInputPipeline.evaluate(
-      skillName,
-      agentName,
-      notifier,
-      this.runner,
-    );
-    return outcome.action === "block"
-      ? { action: "handled" }
-      : { action: "continue" };
   }
 }
 
@@ -170,26 +126,4 @@ export function getEventInput(event: unknown): unknown {
   }
 
   return {};
-}
-
-/**
- * Parse a `/skill:<name>` prefix from user input.
- * Returns the skill name, or null if the text is not a skill invocation.
- */
-export function extractSkillNameFromInput(text: string): string | null {
-  const trimmed = text.trim();
-  if (!trimmed.startsWith("/skill:")) {
-    return null;
-  }
-
-  const afterPrefix = trimmed.slice("/skill:".length);
-  if (!afterPrefix) {
-    return null;
-  }
-
-  const firstWhitespace = afterPrefix.search(/\s/);
-  const skillName = (
-    firstWhitespace === -1 ? afterPrefix : afterPrefix.slice(0, firstWhitespace)
-  ).trim();
-  return skillName || null;
 }

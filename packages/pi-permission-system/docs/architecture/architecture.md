@@ -10,6 +10,7 @@ Hook `ask` and `defer` enter the pipeline in `dialog-fallback` mode, which evalu
 `DialogFallbackPermissionResolver` preserves user-granted session rules and rewrites every other configured result to `ask`.
 The composition root disables yolo rewriting, config-named authorizer chains, and shell-tool aliases while retaining their implementation for compatibility.
 `SerialInteractivePromptQueue` owns FIFO prompt admission and cancels active and queued transactions on session teardown.
+The composition root has no `input` handler or skill-input gate, so explicit `/skill:<name>` user input bypasses permission evaluation while later tool calls remain gated.
 
 The retained deterministic policy engine still parses config, supports unit-level inspection, and supplies normalized command and path facts, but it is not production authority.
 
@@ -393,7 +394,6 @@ The pattern determines what class of future requests auto-approve:
 | bash                   | `npm run dev`               | `npm run dev`               | Arity table              |
 | tool (read/write/etc.) | tool surface itself         | `*` (all uses of that tool) | Tool-level               |
 | mcp                    | `exa:search`                | `exa:*`                     | Server-level wildcard    |
-| skill                  | `librarian`                 | `librarian`                 | Exact name               |
 | external_directory     | `/other/project/src/foo.ts` | `/other/project/*`          | Directory prefix as glob |
 
 The suggestion is shown in the dialog text so the user sees what they're approving:
@@ -856,7 +856,7 @@ src/
 │   ├── index.ts              Barrel re-exports
 │   ├── lifecycle.ts          SessionLifecycleHandler (session: `PermissionSession` + resolver + serviceLifecycle + audit); writes the decision-audit summary on `session_shutdown`
 │   ├── before-agent-start.ts AgentPrepHandler (session + resolver + toolRegistry + `warmParser: () => void`); shouldExposeTool pure helper; recomputes the active set + system-prompt override every fire; fire-and-forget `warmParser()` triggers the tree-sitter warm-up
-│   ├── permission-gate-handler.ts PermissionGateHandler (session + toolRegistry + `PreToolUse` evaluator + pipeline + skillInputPipeline + runner); `handleToolCall` gives terminal hook outcomes precedence, then returns the pipeline's internal total `GateOutcome`; validateRequestedTool + getEventInput + extractSkillNameFromInput pure helpers
+│   ├── permission-gate-handler.ts PermissionGateHandler (session + toolRegistry + `PreToolUse` evaluator + pipeline + runner); `handleToolCall` gives terminal hook outcomes precedence, then returns the pipeline's internal total `GateOutcome`; validateRequestedTool + getEventInput pure helpers
 │   ├── tool-call-boundary.ts `createFailClosedToolCall(gate, reporter, audit, tracer)` - the only `pi.on("tool_call")` target and sole `GateOutcome` → SDK-shape translator; owns the `try/catch → block`, writes a `gate_error` review entry on throw with its own minted request id, broadcasts the matching terminal `permissions:decision` under that same id, and emits a `debugLog`-gated `permission.decision` trace per call
 │   └── gates/               Pure descriptor factories + runner
 │       ├── types.ts          GateOutcome, ToolCallContext
@@ -864,10 +864,8 @@ src/
 │       ├── pre-tool-use-hook-gate.ts `PreToolUseHookGate` - production first gate; runs configured hooks with session context, records abnormal execution diagnostics, terminates on allow/deny, and sends ask/defer to the dialog fallback
 │       ├── runner.ts         GateRunner class — constructed with `ScopedPermissionResolver`, `SessionApprovalRecorder`, `AskEscalator`, `DecisionReporter`, plus a live `isYoloEnabled` reader; `run(gate, agentName)` dispatches null / bypass / descriptor and mints the request id before the branch; production injects yolo disabled
 │       ├── tool-call-gate-pipeline.ts `ToolCallGateInputs` interface (`getActiveSkillEntries`, `getInfrastructureReadDirs`, `getToolPreviewLimits`, `getPathNormalizer`, `getShellToolAliases`) + `ToolCallGatePipeline` class — constructed with `ScopedPermissionResolver` + `ToolCallGateInputs`; full-policy mode owns bash-command extraction and six ordered producers, while production `dialog-fallback` mode runs only the final tool descriptor; `evaluate(tcc, runner)` returns the first block outcome or allow
-│       ├── skill-input-gate-pipeline.ts `SkillInputGateInputs` + `GateNotifier` interfaces + `SkillInputGatePipeline` class — owns the raw `checkPermission` pre-check, deny notification, descriptor construction, and `runner.run`; `evaluate(skillName, agentName, notifier, runner)` makes the `input` path symmetric with the `tool_call` path
 │       ├── helpers.ts        deriveDecisionValue, deriveResolution, buildDecisionEvent, resolveYoloGrant (the standing yolo grant covering a resolved check — a ruleset-rewritten allow or, under yolo, a residual ask)
 │       ├── skill-read.ts     describeSkillReadGate - pure descriptor factory
-│       ├── skill-input.ts    describeSkillInputGate - pure descriptor factory; takes a pre-computed check result so the runner reuses the caller's check
 │       ├── external-directory.ts describeExternalDirectoryGate - pure descriptor/bypass factory; builds an `AccessPath`, delegates policy resolution to `resolveExternalDirectoryPolicy`, uses `accessPath.boundaryValue()` for the outside-CWD boundary and infra-read checks, and discloses `accessPath.resolvedAlias()` when it names a location distinct from the typed path
 │       ├── external-directory-policy.ts Shared external-directory policy check for both gates: `resolveExternalDirectoryPolicy(path, resolver, agentName)` emits an `access-path` `AccessIntent` on the `external_directory` surface; `selectUncoveredExternalPaths(paths, resolver, agentName)` resolves a set, keeps the not-allowed entries, and selects the worst via `pickMostRestrictive`
 │       ├── bash-external-directory.ts describeBashExternalDirectoryGate - pure descriptor/bypass factory over the injected `BashProgram` (`externalPaths()`); delegates the per-path alias matching and worst-uncovered selection to `selectUncoveredExternalPaths`

@@ -114,6 +114,7 @@ test("config.resolved entry appears in review log via logger", () => {
         permissionReviewLog: true,
         yoloMode: false,
         allowLocalEdits: false,
+        zellijTabAlert: false,
         doublePressToConfirm: true,
       }),
       debugLogPath,

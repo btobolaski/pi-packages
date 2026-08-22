@@ -231,6 +231,11 @@ export const unifiedConfigSchema = z
         "Select the acceptEdits permission mode passed to PreToolUse hooks. This setting does not auto-approve tool calls.",
       default: false,
     }),
+    zellijTabAlert: z.boolean().optional().meta({
+      description:
+        "Mark the serving Zellij tab name and Pi pane background while an interactive permission dialog is active. Requires Zellij 0.44.0 or newer.",
+      default: false,
+    }),
     allowWebAccess: z.boolean().optional().meta({
       description:
         "Deprecated compatibility field. Accepted but ignored; web access is decided by PreToolUse hooks or the dialog.",

@@ -74,6 +74,7 @@ describe("ConfigStore symlink-preserving save", () => {
       permissionReviewLog: true,
       yoloMode: true,
       allowLocalEdits: false,
+      zellijTabAlert: false,
       doublePressToConfirm: true,
     });
     expect(

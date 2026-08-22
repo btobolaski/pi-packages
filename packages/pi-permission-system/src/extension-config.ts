@@ -20,6 +20,8 @@ export interface PermissionSystemExtensionConfig {
   yoloMode: boolean;
   /** Select the Claude Code acceptEdits mode passed to PreToolUse hooks; does not auto-approve tools. */
   allowLocalEdits: boolean;
+  /** Mark the serving Zellij tab and Pi pane while a permission dialog is active. */
+  zellijTabAlert: boolean;
   /** Normalized Claude Code-compatible lifecycle hooks. */
   hooks?: HooksConfig;
   /** Require a confirming second press of a decision hotkey in the inline TUI dialog. Defaults to true. */
@@ -45,6 +47,7 @@ export const DEFAULT_EXTENSION_CONFIG: PermissionSystemExtensionConfig = {
   permissionReviewLog: true,
   yoloMode: false,
   allowLocalEdits: false,
+  zellijTabAlert: false,
   doublePressToConfirm: true,
 };
 
@@ -78,6 +81,7 @@ export function normalizePermissionSystemConfig(
     permissionReviewLog: raw.permissionReviewLog !== false,
     yoloMode: raw.yoloMode === true,
     allowLocalEdits: raw.allowLocalEdits === true,
+    zellijTabAlert: raw.zellijTabAlert === true,
     doublePressToConfirm: raw.doublePressToConfirm !== false,
   };
   const hooks = normalizeHooksConfig(raw.hooks);

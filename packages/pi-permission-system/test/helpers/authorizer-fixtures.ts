@@ -98,6 +98,8 @@ export function makeAuthorizerSelectionDeps(
         state: "approved",
         decidedBy: DECIDED_BY_HUMAN,
       }),
+    setPromptIndicator:
+      overrides.setPromptIndicator ?? vi.fn().mockResolvedValue(undefined),
     forwardingDir: overrides.forwardingDir ?? "/tmp/forwarding",
     registry: overrides.registry,
     serving:

@@ -50,6 +50,15 @@ describe("config pipeline seam", () => {
     expect(config.debugLog).toBe(true);
   });
 
+  it("the Zellij alert setting survives the full pipeline", () => {
+    writeGlobal({ zellijTabAlert: true });
+
+    const mergeResult = loadAndMergeConfigs(agentDir, cwd, extensionRoot);
+    const config = normalizePermissionSystemConfig(mergeResult.merged);
+
+    expect(config.zellijTabAlert).toBe(true);
+  });
+
   // The deprecated caps traverse the pipeline backwards from every other field:
   // they must reach the merge intermediate (so the deprecation detector sees an
   // operator's setting) and stop there, never reaching a runtime consumer.

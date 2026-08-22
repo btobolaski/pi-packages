@@ -528,12 +528,14 @@ describe("mergeUnifiedConfigs", () => {
         yoloMode: false,
         allowLocalEdits: false,
         doublePressToConfirm: true,
+        zellijTabAlert: true,
       },
       {
         debugLog: false,
         yoloMode: true,
         allowLocalEdits: true,
         doublePressToConfirm: false,
+        zellijTabAlert: false,
       },
     );
 
@@ -542,6 +544,13 @@ describe("mergeUnifiedConfigs", () => {
     expect(merged.yoloMode).toBe(true);
     expect(merged.allowLocalEdits).toBe(true);
     expect(merged.doublePressToConfirm).toBe(false);
+    expect(merged.zellijTabAlert).toBe(false);
+  });
+
+  it("carries zellijTabAlert from the base when unoverridden", () => {
+    expect(
+      mergeUnifiedConfigs({ zellijTabAlert: true }, {}).zellijTabAlert,
+    ).toBe(true);
   });
 
   it("replaces the prompt-budget scalars (project wins)", () => {

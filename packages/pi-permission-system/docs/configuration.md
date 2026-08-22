@@ -10,10 +10,10 @@ Its `permission`, `shellTools`, and `authorizerChain` configuration does not aut
 
 ## Config File Locations
 
-| Scope | Path |
-| --- | --- |
-| Global | `~/.pi/agent/extensions/pi-permission-system/config.json` |
-| Project | `<cwd>/.pi/extensions/pi-permission-system/config.json` |
+| Scope   | Path                                                      |
+| ------- | --------------------------------------------------------- |
+| Global  | `~/.pi/agent/extensions/pi-permission-system/config.json` |
+| Project | `<cwd>/.pi/extensions/pi-permission-system/config.json`   |
 
 `PI_CODING_AGENT_DIR` replaces the default `~/.pi/agent` root when set.
 Project config loads only after Pi reports that the project is trusted.
@@ -28,6 +28,7 @@ An untrusted project therefore cannot replace global hooks or runtime settings.
   "permissionReviewLog": true,
   "yoloMode": false,
   "allowLocalEdits": true,
+  "zellijTabAlert": false,
   "doublePressToConfirm": true,
   "forwardingTimeoutMs": 600000,
   "promptMaxRows": 24,
@@ -78,16 +79,16 @@ Each group has a required regular-expression `matcher` and at least one command 
 
 Pi tool names are translated before matcher evaluation:
 
-| Pi tool | Hook tool name |
-| --- | --- |
-| `bash` | `Bash` |
-| `read` | `Read` |
-| `write` | `Write` |
-| `edit` | `Edit` |
-| `grep` | `Grep` |
-| `find` | `Glob` |
-| `ls` | `LS` |
-| `skill` | `Skill` |
+| Pi tool           | Hook tool name      |
+| ----------------- | ------------------- |
+| `bash`            | `Bash`              |
+| `read`            | `Read`              |
+| `write`           | `Write`             |
+| `edit`            | `Edit`              |
+| `grep`            | `Grep`              |
+| `find`            | `Glob`              |
+| `ls`              | `LS`                |
+| `skill`           | `Skill`             |
 | MCP `server:tool` | `mcp__server__tool` |
 
 Unknown extension tool names pass through unchanged.
@@ -99,12 +100,12 @@ Matcher arrays are not concatenated across scopes.
 
 ### Hook Command Fields
 
-| Field | Required | Meaning |
-| --- | --- | --- |
-| `type` | Yes | Must be `"command"` |
-| `command` | Yes | POSIX command run by `sh -c` with hook JSON on standard input |
-| `timeout` | No | Positive timeout in seconds; defaults to `10` |
-| `if` | No | Additional `Tool(pattern)` wildcard condition over the tool input |
+| Field     | Required | Meaning                                                           |
+| --------- | -------- | ----------------------------------------------------------------- |
+| `type`    | Yes      | Must be `"command"`                                               |
+| `command` | Yes      | POSIX command run by `sh -c` with hook JSON on standard input     |
+| `timeout` | No       | Positive timeout in seconds; defaults to `10`                     |
+| `if`      | No       | Additional `Tool(pattern)` wildcard condition over the tool input |
 
 ```jsonc
 {
@@ -156,15 +157,15 @@ A command can return a decision using the Claude Code `hookSpecificOutput` shape
 }
 ```
 
-| Result | Behavior |
-| --- | --- |
-| `allow` | Execute without a dialog |
-| `deny` | Block and report the hook reason |
-| `ask` | Use a matching session approval or show the dialog |
-| `defer` | Use a matching session approval or show the dialog |
-| Exit `2` | Deny; standard error becomes the reason |
-| Empty or malformed output | Defer |
-| Timeout, spawn error, or other non-zero exit | Defer |
+| Result                                       | Behavior                                           |
+| -------------------------------------------- | -------------------------------------------------- |
+| `allow`                                      | Execute without a dialog                           |
+| `deny`                                       | Block and report the hook reason                   |
+| `ask`                                        | Use a matching session approval or show the dialog |
+| `defer`                                      | Use a matching session approval or show the dialog |
+| Exit `2`                                     | Deny; standard error becomes the reason            |
+| Empty or malformed output                    | Defer                                              |
+| Timeout, spawn error, or other non-zero exit | Defer                                              |
 
 Multiple hook results merge as `deny > ask > allow > defer`.
 Reasons from results with the winning decision are retained in the terminal message.
@@ -192,6 +193,26 @@ The first press arms the decision and displays a confirmation hint.
 RPC and frontend select dialogs keep their ordinary single-selection flow.
 
 Default: `true`.
+
+### `zellijTabAlert`
+
+`zellijTabAlert: true` marks the serving Zellij tab and Pi pane only while a real human-facing permission dialog is active.
+It prefixes the tab name with "🔔 " (the bell followed by one ASCII space) and sets only the Pi pane background to dark red (`#5f0000`).
+This renames the tab; it does not color the tab-bar entry.
+The integration is plugin-free and requires the `list-panes`, stable tab/pane targeting, and pane-color commands available in Zellij 0.44.0 or newer.
+
+The serving UI session owns the alert, including when a parent displays a forwarded subagent request.
+A non-UI subagent does not mark its own tab or pane.
+Disabling the setting, running outside Zellij, or lacking `ZELLIJ_PANE_ID` leaves permission behavior unchanged.
+
+When the dialog exits, the extension restores the original tab name only if the marked name is still unchanged, so a manual rename made while the dialog is open is preserved.
+It resets the pane background to the terminal default on approval, denial, cancellation, session replacement, extension reload, and shutdown.
+The reset cannot restore an arbitrary custom pane color that existed before the dialog.
+
+All Zellij command, timeout, parsing, and discovery failures are cosmetic and fail open.
+They appear only in the debug log when `debugLog` is enabled, never as warning notifications, and do not change permission decisions, forwarding, or prompt events.
+
+Default: `false`.
 
 ### Prompt Rendering Limits
 
@@ -236,12 +257,12 @@ The prompt renders one aligned fact per line and uses the configured row and fie
 The denial-reason field delegates to Pi's line editor, including paste, movement, deletion, kill-ring, and undo behavior.
 Pasted line breaks become spaces because the reason remains one line.
 
-| Key | Decision |
-| --- | --- |
-| `y` | Approve once |
+| Key | Decision                                      |
+| --- | --------------------------------------------- |
+| `y` | Approve once                                  |
 | `s` | Approve the suggested pattern for the session |
-| `n` | Deny |
-| `r` | Deny with a reason |
+| `n` | Deny                                          |
+| `r` | Deny with a reason                            |
 
 The hook runs before the session-approval lookup on every call.
 A hook denial therefore remains authoritative when the user previously approved a matching session pattern.
@@ -261,16 +282,16 @@ The terminal record distinguishes the serving session from the human, session ap
 
 These fields remain accepted so existing config files do not fail strict validation during migration:
 
-| Field | Runtime behavior |
-| --- | --- |
-| `allowWebAccess` | Ignored |
-| `allowedFetchDomains` | Ignored |
-| `permission` | Parsed and inspectable, but not production authority |
-| `piInfrastructureReadPaths` | Ignored by tool-call authorization |
-| `shellTools` | Ignored by the hooks-first runtime |
-| `authorizerChain` | Ignored by the hooks-first runtime |
-| `toolInputPreviewMaxLength` | Deprecated and ignored |
-| `toolTextSummaryMaxLength` | Deprecated and ignored |
+| Field                       | Runtime behavior                                     |
+| --------------------------- | ---------------------------------------------------- |
+| `allowWebAccess`            | Ignored                                              |
+| `allowedFetchDomains`       | Ignored                                              |
+| `permission`                | Parsed and inspectable, but not production authority |
+| `piInfrastructureReadPaths` | Ignored by tool-call authorization                   |
+| `shellTools`                | Ignored by the hooks-first runtime                   |
+| `authorizerChain`           | Ignored by the hooks-first runtime                   |
+| `toolInputPreviewMaxLength` | Deprecated and ignored                               |
+| `toolTextSummaryMaxLength`  | Deprecated and ignored                               |
 
 Remove these fields after migrating their intended behavior into the hook implementation.
 

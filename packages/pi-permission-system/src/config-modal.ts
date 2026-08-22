@@ -52,6 +52,7 @@ function cloneDefaultConfig(): PermissionSystemExtensionConfig {
     permissionReviewLog: DEFAULT_EXTENSION_CONFIG.permissionReviewLog,
     yoloMode: DEFAULT_EXTENSION_CONFIG.yoloMode,
     allowLocalEdits: DEFAULT_EXTENSION_CONFIG.allowLocalEdits,
+    zellijTabAlert: DEFAULT_EXTENSION_CONFIG.zellijTabAlert,
     doublePressToConfirm: DEFAULT_EXTENSION_CONFIG.doublePressToConfirm,
   };
 }
@@ -81,6 +82,7 @@ function summarizeConfig(
   const knobs = [
     `yoloMode=${toOnOff(config.yoloMode)}`,
     `allowLocalEdits=${toOnOff(config.allowLocalEdits)}`,
+    `zellijTabAlert=${toOnOff(config.zellijTabAlert)}`,
     `permissionReviewLog=${toOnOff(config.permissionReviewLog)}`,
     `debugLog=${toOnOff(config.debugLog)}`,
   ].join(", ");
@@ -106,6 +108,14 @@ function buildSettingItems(
       description:
         "Pass acceptEdits instead of default as the PreToolUse hook permission mode",
       currentValue: toOnOff(config.allowLocalEdits),
+      values: ON_OFF,
+    },
+    {
+      id: "zellijTabAlert",
+      label: "Zellij permission alert",
+      description:
+        "Prefix the serving tab and color the Pi pane while a permission dialog is active",
+      currentValue: toOnOff(config.zellijTabAlert),
       values: ON_OFF,
     },
     {
@@ -145,6 +155,8 @@ function applySetting(
       return { ...config, yoloMode: value === "on" };
     case "allowLocalEdits":
       return { ...config, allowLocalEdits: value === "on" };
+    case "zellijTabAlert":
+      return { ...config, zellijTabAlert: value === "on" };
     case "permissionReviewLog":
       return { ...config, permissionReviewLog: value === "on" };
     case "debugLog":
@@ -162,6 +174,7 @@ function syncSettingValues(
 ): void {
   settingsList.updateValue("yoloMode", toOnOff(config.yoloMode));
   settingsList.updateValue("allowLocalEdits", toOnOff(config.allowLocalEdits));
+  settingsList.updateValue("zellijTabAlert", toOnOff(config.zellijTabAlert));
   settingsList.updateValue(
     "permissionReviewLog",
     toOnOff(config.permissionReviewLog),
@@ -254,6 +267,7 @@ function handleArgs(
         permissionReviewLog: defaults.permissionReviewLog,
         yoloMode: defaults.yoloMode,
         allowLocalEdits: defaults.allowLocalEdits,
+        zellijTabAlert: defaults.zellijTabAlert,
         doublePressToConfirm: defaults.doublePressToConfirm,
       },
       ctx,

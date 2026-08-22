@@ -41,12 +41,17 @@ describe("selectAuthorizer", () => {
       expect(authority.terminal).toBeInstanceOf(LocalUserAuthorizer);
     });
 
-    it("selects ParentAuthorizer when there is no UI but the context is a subagent", () => {
+    it("selects ParentAuthorizer without activating the indicator when there is no UI", () => {
+      const setPromptIndicator = vi.fn().mockResolvedValue(undefined);
       const authority = selectAuthorizer(
         makeCtx(false),
-        makeDeps({ detection: makeDetection(true) }),
+        makeDeps({
+          detection: makeDetection(true),
+          setPromptIndicator,
+        }),
       );
       expect(authority.terminal).toBeInstanceOf(ParentAuthorizer);
+      expect(setPromptIndicator).not.toHaveBeenCalled();
     });
 
     it("selects DenyingAuthorizer when there is no UI and no subagent", () => {

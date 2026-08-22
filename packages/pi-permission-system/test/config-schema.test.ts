@@ -28,6 +28,7 @@ describe("unifiedConfigSchema", () => {
         permissionReviewLog: false,
         yoloMode: true,
         allowLocalEdits: true,
+        zellijTabAlert: true,
         hooks: {
           PreToolUse: [
             {
@@ -83,6 +84,16 @@ describe("unifiedConfigSchema", () => {
       expect(result.success).toBe(false);
       if (!result.success) {
         expect(result.error.issues[0]?.path).toEqual(["debugLog"]);
+      }
+    });
+
+    it("rejects a non-boolean zellijTabAlert", () => {
+      const result = unifiedConfigSchema.safeParse({
+        zellijTabAlert: "yes",
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.path).toEqual(["zellijTabAlert"]);
       }
     });
 

@@ -356,6 +356,11 @@ describe("ConfigStore", () => {
         expect.stringContaining('"doublePressToConfirm": true'),
         "utf-8",
       );
+      expect(mockWriteFileSync).toHaveBeenCalledWith(
+        expect.stringContaining(".tmp"),
+        expect.stringContaining('"zellijTabAlert": false'),
+        "utf-8",
+      );
       expect(mockRenameSync).toHaveBeenCalled();
     });
 

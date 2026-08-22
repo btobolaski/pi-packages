@@ -32,6 +32,8 @@ export interface LocalUserAuthorizerDeps {
   promptQueue: InteractivePromptQueue;
   /** Injected for testability; production callers pass the real function. */
   requestPermissionDecision: typeof requestPermissionDecision;
+  /** Marks only the lifetime of a real, locally served human prompt. */
+  setPromptIndicator: (active: boolean) => Promise<void>;
 }
 
 /**
@@ -50,22 +52,27 @@ export class LocalUserAuthorizer implements TerminalAuthorizer {
   authorize(
     details: PromptPermissionDetails,
   ): Promise<PermissionPromptDecision> {
-    return this.deps.promptQueue.run((signal) => {
+    return this.deps.promptQueue.run(async (signal) => {
       const uiPrompt = buildUiPrompt(details);
-      emitUiPromptEvent(this.deps.events, uiPrompt);
-      return this.deps.requestPermissionDecision(
-        {
-          mode: this.deps.mode,
-          ui: this.deps.ui,
-          ...this.deps.getPromptPreferences(),
-          signal,
-        },
-        details.forwarding
-          ? "Permission Required (Subagent)"
-          : "Permission Required",
-        details.payload,
-        buildRequestOptions(details),
-      );
+      await this.deps.setPromptIndicator(true);
+      try {
+        emitUiPromptEvent(this.deps.events, uiPrompt);
+        return await this.deps.requestPermissionDecision(
+          {
+            mode: this.deps.mode,
+            ui: this.deps.ui,
+            ...this.deps.getPromptPreferences(),
+            signal,
+          },
+          details.forwarding
+            ? "Permission Required (Subagent)"
+            : "Permission Required",
+          details.payload,
+          buildRequestOptions(details),
+        );
+      } finally {
+        await this.deps.setPromptIndicator(false);
+      }
     });
   }
 }

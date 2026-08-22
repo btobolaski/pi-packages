@@ -40,6 +40,7 @@ import { DEFAULT_EXTENSION_CONFIG } from "#src/extension-config";
 import piPermissionSystemExtension from "#src/index";
 import { PERMISSIONS_READY_CHANNEL } from "#src/permission-events";
 import { getPermissionsService } from "#src/service";
+import { ZellijTabAlert } from "#src/zellij-tab-alert";
 import { publishServingHeartbeat } from "#test/helpers/forwarding-fixtures";
 import { makeFakePi } from "#test/helpers/make-fake-pi";
 
@@ -448,6 +449,31 @@ describe("out-of-process forwarding liveness", () => {
 });
 
 describe("shutdown teardown chain", () => {
+  it("awaits the shared Zellij alert cleanup before lifecycle teardown", async () => {
+    const cwd = mkdtempSync(join(tmpdir(), "pi-perm-alert-shutdown-cwd-"));
+    const clearGate = Promise.withResolvers<void>(); // eslint-disable-line @typescript-eslint/no-invalid-void-type -- Promise.withResolvers<void> is valid; rule does not allow void in generic fn call type args
+    const clearSpy = vi
+      .spyOn(ZellijTabAlert.prototype, "clear")
+      .mockReturnValue(clearGate.promise);
+    try {
+      const pi = makeFakePi();
+      piPermissionSystemExtension(pi as unknown as ExtensionAPI);
+      await fireSessionStart(pi, makeChildCtx(cwd, "top-session"));
+
+      const shutdown = pi.fire("session_shutdown");
+      await vi.waitFor(() => expect(clearSpy).toHaveBeenCalledOnce());
+
+      expect(getPermissionsService()).toBeDefined();
+      clearGate.resolve();
+      await shutdown;
+      expect(getPermissionsService()).toBeUndefined();
+    } finally {
+      clearGate.resolve();
+      clearSpy.mockRestore();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("unpublishes the service and unsubscribes the lifecycle on shutdown", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-perm-teardown-cwd-"));
     const pi = makeFakePi();

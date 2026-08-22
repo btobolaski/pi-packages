@@ -147,18 +147,19 @@ Project configuration loads only for trusted projects.
 A project `hooks` value replaces the complete global hook set.
 Scalar runtime settings use project-over-global replacement.
 
-| Field                    | Purpose                                              |
-| ------------------------ | ---------------------------------------------------- |
-| `hooks`                  | Claude Code-compatible `PreToolUse` commands         |
-| `allowLocalEdits`        | Send `permission_mode: "acceptEdits"` to hooks       |
-| `yoloMode`               | Send `permission_mode: "bypassPermissions"` to hooks |
-| `doublePressToConfirm`   | Require confirmation of TUI decision hotkeys         |
-| `forwardingTimeoutMs`    | Bound subagent forwarding waits                      |
-| `promptMaxRows`          | Bound rendered prompt rows                           |
-| `promptFieldMaxWidth`    | Bound each rendered prompt field                     |
-| `reviewLogFieldMaxWidth` | Bound each structured review-log value               |
-| `permissionReviewLog`    | Enable the structured permission review log          |
-| `debugLog`               | Enable diagnostic logging                            |
+| Field                    | Purpose                                                               |
+| ------------------------ | --------------------------------------------------------------------- |
+| `hooks`                  | Claude Code-compatible `PreToolUse` commands                          |
+| `allowLocalEdits`        | Send `permission_mode: "acceptEdits"` to hooks                        |
+| `yoloMode`               | Send `permission_mode: "bypassPermissions"` to hooks                  |
+| `doublePressToConfirm`   | Require confirmation of TUI decision hotkeys                          |
+| `zellijTabAlert`         | Mark the serving Zellij tab and Pi pane during dialogs (Zellij 0.44+) |
+| `forwardingTimeoutMs`    | Bound subagent forwarding waits                                       |
+| `promptMaxRows`          | Bound rendered prompt rows                                            |
+| `promptFieldMaxWidth`    | Bound each rendered prompt field                                      |
+| `reviewLogFieldMaxWidth` | Bound each structured review-log value                                |
+| `permissionReviewLog`    | Enable the structured permission review log                           |
+| `debugLog`               | Enable diagnostic logging                                             |
 
 `allowWebAccess`, `allowedFetchDomains`, `permission`, `piInfrastructureReadPaths`, `shellTools`, and `authorizerChain` are migration compatibility fields rather than production authority.
 `toolInputPreviewMaxLength` and `toolTextSummaryMaxLength` are accepted but ignored; use the prompt rendering limits instead.

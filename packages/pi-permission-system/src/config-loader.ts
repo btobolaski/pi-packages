@@ -210,6 +210,7 @@ export function mergeUnifiedConfigs(
     "permissionReviewLog",
     "yoloMode",
     "allowLocalEdits",
+    "zellijTabAlert",
     "doublePressToConfirm",
   ] as const) {
     const value = override[key] ?? base[key];

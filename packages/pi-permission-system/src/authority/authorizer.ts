@@ -107,6 +107,8 @@ export interface AuthorizerSelectionDeps {
   promptQueue: InteractivePromptQueueController;
   /** Injected for testability; production callers pass the real function. */
   requestPermissionDecision: typeof requestPermissionDecision;
+  /** Marks only locally served human prompts; never passed to relay or denying terminals. */
+  setPromptIndicator: (active: boolean) => Promise<void>;
   /** Forwarding directory `ParentAuthorizer` reads/writes request and response files under. */
   forwardingDir: string;
   /** In-process subagent session registry for forwarding target resolution. */
@@ -140,6 +142,7 @@ export function selectAuthorizer(
         getPromptPreferences: deps.getPromptPreferences,
         promptQueue: deps.promptQueue,
         requestPermissionDecision: deps.requestPermissionDecision,
+        setPromptIndicator: deps.setPromptIndicator,
       }),
       adjudicatesLocally: true,
     };

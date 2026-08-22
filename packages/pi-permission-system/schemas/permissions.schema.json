@@ -30,6 +30,11 @@
       "default": false,
       "type": "boolean"
     },
+    "zellijTabAlert": {
+      "description": "Mark the serving Zellij tab name and Pi pane background while an interactive permission dialog is active. Requires Zellij 0.44.0 or newer.",
+      "default": false,
+      "type": "boolean"
+    },
     "allowWebAccess": {
       "description": "Deprecated compatibility field. Accepted but ignored; web access is decided by PreToolUse hooks or the dialog.",
       "default": false,

@@ -4,6 +4,7 @@
   "permissionReviewLog": true,
   "yoloMode": false,
   "allowLocalEdits": false,
+  "zellijTabAlert": false,
   "doublePressToConfirm": true,
   "forwardingTimeoutMs": 600000,
   "promptMaxRows": 24,

@@ -55,6 +55,7 @@ import { PermissionSessionLogger } from "./session-logger";
 import { SessionRules } from "./session-rules";
 import { ToolAccessExtractorRegistry } from "./tool-access-extractor-registry";
 import { ToolInputFormatterRegistry } from "./tool-input-formatter-registry";
+import { ZellijTabAlert } from "./zellij-tab-alert";
 
 export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   const agentDir = getAgentDir();
@@ -113,6 +114,13 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     logger,
   });
 
+  const zellijAlert = new ZellijTabAlert({
+    exec: (command, args, options) => pi.exec(command, args, options),
+    isEnabled: () => configStore.current().zellijTabAlert,
+    zellijPaneId: process.env.ZELLIJ_PANE_ID,
+    logger,
+  });
+
   const prompter = new PermissionPrompter({ logger });
   const promptQueue = new SerialInteractivePromptQueue();
 
@@ -139,6 +147,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     }),
     promptQueue,
     requestPermissionDecision,
+    setPromptIndicator: (active) =>
+      active ? zellijAlert.activate() : zellijAlert.clear(),
     forwardingDir: paths.forwardingDir,
     registry: subagentRegistry,
     serving: servingLiveness,
@@ -325,7 +335,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   pi.on("resources_discover", (event, ctx) =>
     lifecycle.handleResourcesDiscover(event, ctx),
   );
-  pi.on("session_shutdown", () => lifecycle.handleSessionShutdown());
+  pi.on("session_shutdown", async () => {
+    await zellijAlert.clear();
+    await lifecycle.handleSessionShutdown();
+  });
   pi.on("before_agent_start", (event, ctx) => agentPrep.handle(event, ctx));
   pi.on(
     "tool_call",

@@ -101,6 +101,7 @@ describe("normalizePermissionSystemConfig", () => {
       yoloMode: true,
       allowLocalEdits: false,
       doublePressToConfirm: true,
+      zellijTabAlert: false,
     });
   });
 
@@ -127,6 +128,16 @@ describe("normalizePermissionSystemConfig", () => {
   it("enables the hook edit mode when allowLocalEdits is true", () => {
     const result = normalizePermissionSystemConfig({ allowLocalEdits: true });
     expect(result.allowLocalEdits).toBe(true);
+  });
+
+  it("defaults zellijTabAlert to false when missing", () => {
+    expect(normalizePermissionSystemConfig({}).zellijTabAlert).toBe(false);
+  });
+
+  it("enables the Zellij tab alert when explicitly configured", () => {
+    expect(
+      normalizePermissionSystemConfig({ zellijTabAlert: true }).zellijTabAlert,
+    ).toBe(true);
   });
 
   it("normalizes configured PreToolUse hooks", () => {

@@ -157,6 +157,7 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       permissionReviewLog: normalized.permissionReviewLog,
       yoloMode: normalized.yoloMode,
       allowLocalEdits: normalized.allowLocalEdits,
+      zellijTabAlert: normalized.zellijTabAlert,
       doublePressToConfirm: normalized.doublePressToConfirm,
     };
 
@@ -192,6 +193,7 @@ export class ConfigStore implements SessionConfigStore, CommandConfigStore {
       permissionReviewLog: normalized.permissionReviewLog,
       yoloMode: normalized.yoloMode,
       allowLocalEdits: normalized.allowLocalEdits,
+      zellijTabAlert: normalized.zellijTabAlert,
     });
   }
 

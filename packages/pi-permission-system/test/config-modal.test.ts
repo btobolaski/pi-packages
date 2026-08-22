@@ -8,14 +8,32 @@ import {
 } from "#src/extension-config";
 import type { Rule, Ruleset } from "#src/rule";
 
+const settingsListCapture = vi.hoisted(() => ({
+  items: [] as Array<{ id: string; currentValue: string }>,
+  onChange: undefined as ((id: string, value: string) => void) | undefined,
+  updates: [] as Array<[string, string]>,
+}));
+
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   getSettingsListTheme: () => ({}),
 }));
 
 vi.mock("@earendil-works/pi-tui", () => ({
   SettingsList: class {
+    constructor(
+      items: Array<{ id: string; currentValue: string }>,
+      _height: number,
+      _theme: unknown,
+      onChange: (id: string, value: string) => void,
+    ) {
+      settingsListCapture.items = items;
+      settingsListCapture.onChange = onChange;
+      settingsListCapture.updates = [];
+    }
     handleInput(): void {}
-    updateValue(): void {}
+    updateValue(id: string, value: string): void {
+      settingsListCapture.updates.push([id, value]);
+    }
     render(): string[] {
       return [];
     }
@@ -60,10 +78,11 @@ function createCommandContext(hasUI: boolean): {
           notifications.push({ message, level });
         },
         async custom<T>(
-          _renderer: (...args: unknown[]) => unknown,
+          renderer: (...args: unknown[]) => unknown,
           _options?: unknown,
         ): Promise<T> {
           customCalls += 1;
+          renderer({}, {}, {}, () => undefined);
           return undefined as T;
         },
       },
@@ -149,6 +168,7 @@ test("show summarizes active hook settings", async () => {
     debugLog: true,
     yoloMode: true,
     allowLocalEdits: true,
+    zellijTabAlert: true,
   };
   const { definition } = makeCommandHarness({ config });
   const context = createCommandContext(true);
@@ -158,6 +178,7 @@ test("show summarizes active hook settings", async () => {
   const message = lastNotification(context.notifications).message;
   expect(message).toContain("yoloMode=on");
   expect(message).toContain("allowLocalEdits=on");
+  expect(message).toContain("zellijTabAlert=on");
   expect(message).toContain("debugLog=on");
 });
 
@@ -186,6 +207,7 @@ test("reset restores settings while preserving the active hook set", async () =>
     yoloMode: true,
     allowLocalEdits: true,
     doublePressToConfirm: false,
+    zellijTabAlert: true,
     hooks: {
       PreToolUse: [
         {
@@ -229,6 +251,27 @@ test("an empty command opens the settings modal in a UI session", async () => {
   await definition.handler("", context.ctx);
 
   expect(context.getCustomCalls()).toBe(1);
+  expect(settingsListCapture.items).toContainEqual(
+    expect.objectContaining({
+      id: "zellijTabAlert",
+      currentValue: "off",
+    }),
+  );
+});
+
+test("the settings modal toggles the Zellij alert", async () => {
+  const { definition, save, current } = makeCommandHarness();
+  const context = createCommandContext(true);
+
+  await definition.handler("", context.ctx);
+  settingsListCapture.onChange?.("zellijTabAlert", "on");
+
+  expect(save).toHaveBeenCalledWith(
+    expect.objectContaining({ zellijTabAlert: true }),
+    context.ctx,
+  );
+  expect(current().zellijTabAlert).toBe(true);
+  expect(settingsListCapture.updates).toContainEqual(["zellijTabAlert", "on"]);
 });
 
 test("show output includes rule origins when composed rules exist", async () => {

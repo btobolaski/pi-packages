@@ -42,6 +42,7 @@ function makePromptUi() {
 function makeDeps(
   overrides: {
     requestPermissionDecision?: typeof requestPermissionDecision;
+    setPromptIndicator?: (active: boolean) => Promise<void>;
   } = {},
 ) {
   const events = {
@@ -56,6 +57,8 @@ function makeDeps(
       state: "approved",
       decidedBy: DECIDED_BY_HUMAN,
     });
+  const setPromptIndicator =
+    overrides.setPromptIndicator ?? vi.fn().mockResolvedValue(undefined);
   return {
     deps: {
       ui,
@@ -64,10 +67,12 @@ function makeDeps(
       getPromptPreferences: () => makePromptPreferences(),
       promptQueue: new SerialInteractivePromptQueue(),
       requestPermissionDecision: decisionFn,
+      setPromptIndicator,
     },
     events,
     ui,
     decisionFn,
+    setPromptIndicator,
   };
 }
 
@@ -156,7 +161,19 @@ describe("LocalUserAuthorizer", () => {
     );
   });
 
-  it("emits the UI event before calling requestPermissionDecision", async () => {
+  it("propagates indicator activation failure before opening the dialog", async () => {
+    const failure = new Error("indicator failed");
+    const setPromptIndicator = vi.fn().mockRejectedValue(failure);
+    const { deps, decisionFn } = makeDeps({ setPromptIndicator });
+    const authorizer = new LocalUserAuthorizer(deps);
+
+    await expect(authorizer.authorize(makeDetails())).rejects.toBe(failure);
+    expect(setPromptIndicator).toHaveBeenCalledOnce();
+    expect(setPromptIndicator).toHaveBeenCalledWith(true);
+    expect(decisionFn).not.toHaveBeenCalled();
+  });
+
+  it("marks the prompt immediately around the existing event and dialog sequence", async () => {
     const calls: string[] = [];
     const events = {
       emit: vi.fn(() => {
@@ -180,16 +197,19 @@ describe("LocalUserAuthorizer", () => {
       getPromptPreferences: () => makePromptPreferences(),
       promptQueue: new SerialInteractivePromptQueue(),
       requestPermissionDecision: decisionFn,
+      setPromptIndicator: async (active) => {
+        calls.push(active ? "activate" : "clear");
+      },
     });
 
     await authorizer.authorize(makeDetails());
 
-    expect(calls).toEqual(["emit", "dialog"]);
+    expect(calls).toEqual(["activate", "emit", "dialog", "clear"]);
   });
 
   describe("forwarded provenance", () => {
     it("emits a non-degraded forwarded event with populated forwarding and the child's display projection", async () => {
-      const { deps, events } = makeDeps();
+      const { deps, events, setPromptIndicator } = makeDeps();
       const authorizer = new LocalUserAuthorizer(deps);
 
       await authorizer.authorize(
@@ -217,6 +237,8 @@ describe("LocalUserAuthorizer", () => {
           requesterSessionId: "child-session",
         },
       });
+      expect(setPromptIndicator).toHaveBeenNthCalledWith(1, true);
+      expect(setPromptIndicator).toHaveBeenNthCalledWith(2, false);
     });
 
     it("uses the '(Subagent)' dialog title when the ask is forwarded", async () => {
@@ -296,21 +318,80 @@ describe("LocalUserAuthorizer", () => {
     });
   });
 
-  it("returns the decision from requestPermissionDecision", async () => {
-    const decision: PermissionPromptDecision = {
-      approved: false,
-      state: "denied",
-      decidedBy: DECIDED_BY_HUMAN,
-    };
-    const { deps } = makeDeps({
+  it.each([
+    [
+      "approval",
+      {
+        approved: true,
+        state: "approved",
+        decidedBy: DECIDED_BY_HUMAN,
+      } satisfies PermissionPromptDecision,
+    ],
+    [
+      "denial",
+      {
+        approved: false,
+        state: "denied",
+        decidedBy: DECIDED_BY_HUMAN,
+      } satisfies PermissionPromptDecision,
+    ],
+  ])("returns a %s unchanged and clears the indicator", async (_name, decision) => {
+    const { deps, setPromptIndicator } = makeDeps({
       requestPermissionDecision: vi
         .fn<typeof requestPermissionDecision>()
         .mockResolvedValue(decision),
     });
     const authorizer = new LocalUserAuthorizer(deps);
 
-    const result = await authorizer.authorize(makeDetails());
+    await expect(authorizer.authorize(makeDetails())).resolves.toEqual(
+      decision,
+    );
+    expect(setPromptIndicator).toHaveBeenNthCalledWith(1, true);
+    expect(setPromptIndicator).toHaveBeenNthCalledWith(2, false);
+  });
 
-    expect(result).toEqual(decision);
+  it("preserves a dialog rejection and clears the indicator", async () => {
+    const failure = new Error("dialog failed");
+    const { deps, setPromptIndicator } = makeDeps({
+      requestPermissionDecision: vi
+        .fn<typeof requestPermissionDecision>()
+        .mockRejectedValue(failure),
+    });
+    const authorizer = new LocalUserAuthorizer(deps);
+
+    await expect(authorizer.authorize(makeDetails())).rejects.toBe(failure);
+    expect(setPromptIndicator).toHaveBeenNthCalledWith(1, true);
+    expect(setPromptIndicator).toHaveBeenNthCalledWith(2, false);
+  });
+
+  it("preserves queue cancellation and clears the indicator", async () => {
+    const queue = new SerialInteractivePromptQueue();
+    const decisionFn = vi.fn<typeof requestPermissionDecision>(({ signal }) => {
+      if (!signal) throw new Error("expected prompt queue signal");
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener(
+          "abort",
+          () => reject(new Error("dialog aborted")),
+          { once: true },
+        );
+      });
+    });
+    const { deps, setPromptIndicator } = makeDeps({
+      requestPermissionDecision: decisionFn,
+    });
+    deps.promptQueue = queue;
+    const authorizer = new LocalUserAuthorizer(deps);
+
+    const pending = authorizer.authorize(makeDetails());
+    await vi.waitFor(() => expect(decisionFn).toHaveBeenCalledOnce());
+    queue.invalidate("The permission session changed.");
+
+    await expect(pending).rejects.toMatchObject({
+      name: "InteractivePromptCancelledError",
+      message: "The permission session changed.",
+    });
+    await vi.waitFor(() =>
+      expect(setPromptIndicator).toHaveBeenNthCalledWith(2, false),
+    );
   });
 });

@@ -28,7 +28,7 @@ export interface PermissionSystemExtensionConfig {
   doublePressToConfirm: boolean;
   /** Additional directories to auto-allow for reads as Pi infrastructure. */
   piInfrastructureReadPaths?: string[];
-  /** How long a subagent waits for the parent's answer to a forwarded ask, in ms. Defaults to 600000. */
+  /** How long a subagent waits for the parent's answer to a forwarded ask, in ms. Defaults to 120000. */
   forwardingTimeoutMs?: number;
   /** Max rows a permission prompt renders before eliding its evidence. Defaults to 24. */
   promptMaxRows?: number;

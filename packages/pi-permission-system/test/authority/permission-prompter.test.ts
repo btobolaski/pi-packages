@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TerminalAuthorizer } from "#src/authority/authorizer";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
+import { FORWARDED_PERMISSION_TIMEOUT_DECISION } from "#src/authority/permission-forwarding";
 import {
   PermissionPrompter,
   type PermissionPrompterDeps,
   type PromptPermissionDetails,
 } from "#src/authority/permission-prompter";
 import { DECIDED_BY_HUMAN } from "#test/helpers/decision-fixtures";
+import { makeForwardingDeadline } from "#test/helpers/forwarding-fixtures";
 import {
   makePromptDetails,
   makePromptPayload,
@@ -147,6 +149,63 @@ describe("PermissionPrompter", () => {
           resolution: "confirmation_unavailable",
         }),
       );
+    });
+
+    it("normalizes a late authorizer approval before writing its outcome", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(1000);
+      try {
+        const logger = { review: vi.fn() };
+        const prompter = new PermissionPrompter(makeDeps({ logger }));
+        const authorizer: TerminalAuthorizer = {
+          authorize: vi.fn(async () => {
+            vi.setSystemTime(2000);
+            return {
+              approved: true,
+              state: "approved" as const,
+              decidedBy: DECIDED_BY_HUMAN,
+            };
+          }),
+        };
+        const { forwardingDeadline } = makeForwardingDeadline(1500);
+
+        const decision = await prompter.prompt(
+          authorizer,
+          makeDetails({ forwardingDeadline }),
+        );
+
+        expect(decision).toEqual(FORWARDED_PERMISSION_TIMEOUT_DECISION);
+        expect(logger.review).toHaveBeenLastCalledWith(
+          "permission_request.denied",
+          expect.objectContaining({
+            resolution: "confirmation_unavailable",
+            denialReason: "Auto-approval could not approve this tool use",
+            decidedBy: {
+              kind: "unavailable",
+              reason: "Auto-approval could not approve this tool use",
+            },
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("passes through an authorizer decision completed before its deadline", async () => {
+      const decision = {
+        approved: true,
+        state: "approved" as const,
+        decidedBy: DECIDED_BY_HUMAN,
+      };
+      const prompter = new PermissionPrompter(makeDeps());
+      const { forwardingDeadline } = makeForwardingDeadline();
+
+      await expect(
+        prompter.prompt(
+          makeAuthorizer(decision),
+          makeDetails({ forwardingDeadline }),
+        ),
+      ).resolves.toBe(decision);
     });
 
     it("logs permission_request.denied with denialReason when present", async () => {

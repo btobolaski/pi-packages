@@ -1,4 +1,10 @@
+import type { ExtensionUIDialogOptions } from "@earendil-works/pi-coding-agent";
 import type { DecisionSource } from "#src/authority/decision-source";
+import {
+  ForwardedPermissionDeadlineExpiredError,
+  type ForwardingDeadline,
+  isForwardingDeadlineExpired,
+} from "#src/authority/permission-forwarding";
 
 export type PermissionDecisionState =
   | "approved"
@@ -18,16 +24,17 @@ export type PermissionPromptDecision = {
    */
   autoApproved?: true;
   /**
-   * True when no human ever ruled on this ask: either no live authority was
-   * reachable at all (`DenyingAuthorizer`, a no-UI non-subagent session) or the
-   * forwarding path gave up before reaching one (`ParentAuthorizer` — target
-   * unresolvable, request undeliverable, target not serving, or no answer
-   * within the timeout). Consumed by deriveResolution (the decision-event
-   * resolution), the gate (block reason), and PermissionPrompter (review-entry
-   * resolution) to emit "confirmation_unavailable" rather than a plain user
-   * denial — a user who was never asked denied nothing (#719).
+   * True when no human ruled on this ask: for example, no live authority was
+   * reachable, forwarding failed before delivery, or a forwarded request's
+   * deadline expired before an answer. Consumed by deriveResolution (the
+   * decision-event resolution), the gate (block reason), and
+   * PermissionPrompter (review-entry resolution) to emit
+   * "confirmation_unavailable" rather than a plain user denial — a user who
+   * never completed a decision denied nothing (#719).
    */
   confirmationUnavailable?: true;
+  /** True only when a forwarded request reached its shared deadline. */
+  forwardingTimedOut?: true;
   /**
    * What decided this request, stamped by the site that decided it.
    *
@@ -50,8 +57,16 @@ export type PermissionPromptDecision = {
 export type UnattributedDecision = Omit<PermissionPromptDecision, "decidedBy">;
 
 export interface PermissionDecisionUi {
-  select(title: string, options: string[]): Promise<string | undefined>;
-  input(title: string, placeholder?: string): Promise<string | undefined>;
+  select(
+    title: string,
+    options: string[],
+    dialogOptions?: ExtensionUIDialogOptions,
+  ): Promise<string | undefined>;
+  input(
+    title: string,
+    placeholder?: string,
+    dialogOptions?: ExtensionUIDialogOptions,
+  ): Promise<string | undefined>;
 }
 
 const APPROVE_OPTION = "Yes";
@@ -86,6 +101,19 @@ export function createDeniedPermissionDecision(
       };
 }
 
+/** Deny because no live authority completed the permission request. */
+export function createUnavailablePermissionDecision(
+  reason: string,
+): PermissionPromptDecision {
+  return {
+    approved: false,
+    state: "denied",
+    confirmationUnavailable: true,
+    denialReason: reason,
+    decidedBy: { kind: "unavailable", reason },
+  };
+}
+
 export function isPermissionDecisionState(
   value: unknown,
 ): value is PermissionDecisionState {
@@ -99,6 +127,14 @@ export function isPermissionDecisionState(
 }
 
 export interface RequestPermissionOptions {
+  /**
+   * Runtime-only deadline control for a forwarded interaction.
+   *
+   * When a prompt view also carries a signal, both fields must carry the same
+   * session/request-combined signal. `LocalUserAuthorizer` establishes that
+   * alias after queue admission so session teardown still closes the dialog.
+   */
+  forwardingDeadline?: ForwardingDeadline;
   /** Override the "for this session" option label (e.g. to show the suggested pattern). */
   sessionLabel?: string;
   /**
@@ -126,9 +162,13 @@ export async function requestPermissionDecisionFromUi(
     DENY_WITH_REASON_OPTION,
   ] as const;
 
-  const selected = await ui.select(`${title}\n${message}`, [
-    ...decisionOptions,
-  ]);
+  const deadline = options?.forwardingDeadline;
+  const selected = await ui.select(
+    `${title}\n${message}`,
+    [...decisionOptions],
+    deadline ? dialogOptions(deadline) : undefined,
+  );
+  assertDeadlineActive(deadline);
 
   if (selected === APPROVE_OPTION) {
     return {
@@ -139,10 +179,15 @@ export async function requestPermissionDecisionFromUi(
 
   if (selected === sessionOption) {
     if (options?.sessionScope) {
-      const scope = await ui.select(`${title}\nApply this session grant to:`, [
-        options.sessionScope.subagentLabel,
-        options.sessionScope.servingSessionLabel,
-      ]);
+      const scope = await ui.select(
+        `${title}\nApply this session grant to:`,
+        [
+          options.sessionScope.subagentLabel,
+          options.sessionScope.servingSessionLabel,
+        ],
+        deadline ? dialogOptions(deadline) : undefined,
+      );
+      assertDeadlineActive(deadline);
       return {
         approved: true,
         // A cancelled scope select (undefined) falls back to the
@@ -164,11 +209,27 @@ export async function requestPermissionDecisionFromUi(
       await ui.input(
         `${title}\nShare why this request was denied (optional).`,
         "Reason shown back to the agent",
+        deadline ? dialogOptions(deadline) : undefined,
       ),
     );
+    assertDeadlineActive(deadline);
 
     return createDeniedPermissionDecision(denialReason);
   }
 
   return createDeniedPermissionDecision();
+}
+
+function dialogOptions(deadline: ForwardingDeadline): ExtensionUIDialogOptions {
+  assertDeadlineActive(deadline);
+  return {
+    signal: deadline.signal,
+    timeout: deadline.expiresAt - Date.now(),
+  };
+}
+
+function assertDeadlineActive(deadline: ForwardingDeadline | undefined): void {
+  if (isForwardingDeadlineExpired(deadline)) {
+    throw new ForwardedPermissionDeadlineExpiredError();
+  }
 }

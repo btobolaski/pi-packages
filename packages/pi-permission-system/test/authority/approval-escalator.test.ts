@@ -159,17 +159,22 @@ describe("ParentAuthorizer provenance relay", () => {
 });
 
 describe("ParentAuthorizer", () => {
-  test("writes a forwarded request carrying the display fields and resolves with the parent's response", async () => {
+  test("writes a forwarded request with display fields and a wire-safe snapshotted deadline", async () => {
     const temp = createForwardingTempDir("parent-session");
     try {
       const registry = makeSubagentRegistry("child-session", {
         parentSessionId: "parent-session",
       });
+      const getTimeoutMs = vi
+        .fn()
+        .mockReturnValueOnce(Number.MAX_SAFE_INTEGER)
+        .mockReturnValue(20_000);
       const authorizer = new ParentAuthorizer(
         makeForwarderContext({ hasUI: false, sessionId: "child-session" }),
         makeParentAuthorizerDeps({
           forwardingDir: temp.forwardingDir,
           registry,
+          getTimeoutMs,
         }),
       );
 
@@ -188,6 +193,8 @@ describe("ParentAuthorizer", () => {
       expect(request.source).toBe("tool_call");
       expect(request.surface).toBe("bash");
       expect(request.value).toBe("git push");
+      expect(request.expiresAt).toBe(Number.MAX_SAFE_INTEGER);
+      expect(getTimeoutMs).toHaveBeenCalledOnce();
 
       writeFileSync(
         join(temp.location.responsesDir, `${request.id}.json`),
@@ -718,12 +725,104 @@ describe("ParentAuthorizer abandonment", () => {
         }),
       );
 
-      await expect(authorizer.authorize({ ...forwardedAsk })).resolves.toEqual(
-        unavailableDecision(
-          "Session 'parent-session' did not answer within 0.4s",
-        ),
-      );
+      await expect(authorizer.authorize({ ...forwardedAsk })).resolves.toEqual({
+        approved: false,
+        state: "denied",
+        confirmationUnavailable: true,
+        forwardingTimedOut: true,
+        denialReason: "Auto-approval could not approve this tool use",
+        decidedBy: {
+          kind: "unavailable",
+          reason: "Auto-approval could not approve this tool use",
+        },
+      });
     } finally {
+      temp.cleanup();
+    }
+  });
+
+  test("rejects a response observed at the exact deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const temp = createForwardingTempDir("parent-session");
+    try {
+      const authorizer = new ParentAuthorizer(
+        makeForwarderContext({ hasUI: false, sessionId: "child-session" }),
+        makeParentAuthorizerDeps({
+          forwardingDir: temp.forwardingDir,
+          registry: makeSubagentRegistry("child-session", {
+            parentSessionId: "parent-session",
+          }),
+          getTimeoutMs: () => 100,
+        }),
+      );
+
+      const decision = authorizer.authorize({ ...forwardedAsk });
+      const requestFile = readdirSync(temp.location.requestsDir)[0];
+      if (!requestFile) throw new Error("expected request file");
+      const request = JSON.parse(
+        readFileSync(join(temp.location.requestsDir, requestFile), "utf-8"),
+      ) as ForwardedPermissionRequest;
+      writeFileSync(
+        join(temp.location.responsesDir, `${request.id}.json`),
+        JSON.stringify({
+          approved: true,
+          state: "approved",
+          responderSessionId: "parent-session",
+        }),
+        "utf-8",
+      );
+
+      await vi.advanceTimersByTimeAsync(100);
+
+      await expect(decision).resolves.toMatchObject({
+        approved: false,
+        forwardingTimedOut: true,
+      });
+      expect(
+        existsSync(join(temp.location.responsesDir, `${request.id}.json`)),
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      temp.cleanup();
+    }
+  });
+
+  test("honors an explicit timeout longer than the two-minute default", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const temp = createForwardingTempDir("parent-session");
+    try {
+      const authorizer = new ParentAuthorizer(
+        makeForwarderContext({ hasUI: false, sessionId: "child-session" }),
+        makeParentAuthorizerDeps({
+          forwardingDir: temp.forwardingDir,
+          registry: makeSubagentRegistry("child-session", {
+            parentSessionId: "parent-session",
+          }),
+          getTimeoutMs: () => 600_000,
+        }),
+      );
+
+      const decision = authorizer.authorize({ ...forwardedAsk });
+      const requestFile = readdirSync(temp.location.requestsDir)[0];
+      if (!requestFile) throw new Error("expected request file");
+      const requestPath = join(temp.location.requestsDir, requestFile);
+      const request = JSON.parse(
+        readFileSync(requestPath, "utf-8"),
+      ) as ForwardedPermissionRequest;
+      expect(request.expiresAt).toBe(request.createdAt + 600_000);
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(existsSync(requestPath)).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(480_000);
+      await expect(decision).resolves.toMatchObject({
+        approved: false,
+        forwardingTimedOut: true,
+      });
+    } finally {
+      vi.useRealTimers();
       temp.cleanup();
     }
   });

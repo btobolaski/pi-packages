@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { FORWARDED_PERMISSION_TIMEOUT_DECISION } from "#src/authority/permission-forwarding";
 import type { GateBypass } from "#src/handlers/gates/descriptor";
 import type { PermissionDecisionEvent } from "#src/permission-events";
 import { EXTENSION_TAG } from "#src/presentation/agent-renderer";
@@ -550,6 +551,22 @@ describe("GateRunner — descriptor path", () => {
         expect(result.reason).toContain(EXTENSION_TAG);
         expect(result.reason).toContain("no interactive UI");
       }
+    });
+
+    it("renders a forwarding timeout as the exact model-visible reason", async () => {
+      const { runner } = makeGateRunner({
+        resolveResult: makeCheckResult({ state: "ask", matchedPattern: "*" }),
+        escalate: vi
+          .fn()
+          .mockResolvedValue(FORWARDED_PERMISSION_TIMEOUT_DECISION),
+      });
+
+      const result = await runner.run(makeDescriptor(), null);
+
+      expect(result).toEqual({
+        action: "block",
+        reason: "Auto-approval could not approve this tool use",
+      });
     });
 
     it("carries an unavailable decision's denial reason into the block message", async () => {

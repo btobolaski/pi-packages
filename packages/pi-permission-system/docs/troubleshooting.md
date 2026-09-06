@@ -70,7 +70,14 @@ Without one of those authorities, the request fails closed.
 
 Confirm that the parent session is active and serving its forwarding inbox.
 For out-of-process children, confirm that `PI_SUBAGENT_PARENT_SESSION` is set to the parent session ID.
-`forwardingTimeoutMs` bounds unanswered forwarding waits; an in-process target known not to be serving fails earlier.
+`forwardingTimeoutMs` is a positive-integer deadline that starts when the child creates the request, including time queued behind another prompt.
+It defaults to `120000` ms; explicit shorter and longer values remain valid.
+A missing or dead serving target still fails earlier through the liveness check.
+
+An unanswered deadline blocks with exactly `Auto-approval could not approve this tool use` and is logged as `confirmation_unavailable`, not as a user denial.
+The backend cancels the permission interaction and ignores late answers, although a third-party RPC frontend that ignores the SDK timeout may retain stale visuals.
+This setting is separate from subagent watchdog and run timeouts, which supervise the overall child run.
+After upgrading, restart the serving parent so both sides enforce cancellation and reject late grants.
 
 ## Config Is Rejected
 

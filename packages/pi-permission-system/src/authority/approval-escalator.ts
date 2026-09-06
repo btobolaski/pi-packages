@@ -20,13 +20,18 @@ import {
   writeJsonFileAtomic,
 } from "#src/authority/forwarding-io";
 import type { TargetServingLookup } from "#src/authority/forwarding-liveness";
-import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import {
+  createUnavailablePermissionDecision as abandon,
+  type PermissionPromptDecision,
+} from "#src/authority/permission-dialog";
+import {
+  FORWARDED_PERMISSION_TIMEOUT_DECISION,
   type ForwardedAccessFacts,
   type ForwardedPermissionRequest,
   type ForwardedPermissionResponse,
   type ForwardedPromptDisplay,
   type ForwardedSessionApproval,
+  isForwardingExpiryReached,
   PERMISSION_FORWARDING_POLL_INTERVAL_MS,
   PERMISSION_FORWARDING_SERVING_GRACE_MS,
   type PermissionForwardingLocation,
@@ -77,6 +82,10 @@ function getContextSystemPrompt(ctx: ForwarderContext): string | undefined {
  * (`waitForForwardedApproval` → `buildForwardedRequest`) threads a single
  * relayed value instead of three positional optionals.
  */
+type ForwardedPermissionRequestWithDeadline = ForwardedPermissionRequest & {
+  expiresAt: number;
+};
+
 interface ForwardedRequestFacts {
   /**
    * The requester's own permission request id, adopted as the forwarded
@@ -99,30 +108,9 @@ export interface ParentAuthorizerDeps {
   registry?: SubagentSessionRegistry;
   /** Whether the resolved target is draining its inbox, on whichever channel can say. */
   serving: TargetServingLookup;
-  /** How long to wait for the target's answer, read live so config edits apply. */
+  /** How long to wait for the target's answer, snapshotted once per request. */
   getTimeoutMs: () => number;
   logger: DebugReviewLogger;
-}
-
-/**
- * Deny because no authority ever ruled — the request was never delivered,
- * never answered, or answered unreadably.
- *
- * `confirmationUnavailable` is what keeps this out of the "User denied …"
- * message (#719): a user who was never asked denied nothing. `denialReason`
- * names which path gave up, and the gate renders it to the model.
- *
- * The provenance record reuses that same string rather than restating it, so
- * what the model is told and what the log attributes cannot drift (#726).
- */
-function abandon(denialReason: string): PermissionPromptDecision {
-  return {
-    approved: false,
-    state: "denied",
-    confirmationUnavailable: true,
-    denialReason,
-    decidedBy: { kind: "unavailable", reason: denialReason },
-  };
 }
 
 /**
@@ -277,6 +265,8 @@ export class ParentAuthorizer implements TerminalAuthorizer {
       targetSessionId: target.sessionId,
       requestPath,
       responsePath,
+      createdAt: request.createdAt,
+      expiresAt: request.expiresAt,
     });
 
     try {
@@ -305,7 +295,7 @@ export class ParentAuthorizer implements TerminalAuthorizer {
     facts: ForwardedRequestFacts,
     requesterSessionId: string,
     targetSessionId: string,
-  ): ForwardedPermissionRequest {
+  ): ForwardedPermissionRequestWithDeadline {
     const requestId = forwardableRequestId(facts.requestId);
     const requesterAgentName =
       getActiveAgentName(ctx) ??
@@ -325,9 +315,17 @@ export class ParentAuthorizer implements TerminalAuthorizer {
           },
         }
       : undefined;
+    const createdAt = Date.now();
+    // ponytail: epoch-ms wire saturates here; use a bigint wire only if a
+    // timeout beyond the latest safe JavaScript timestamp ever matters.
+    const expiresAt = Math.min(
+      Number.MAX_SAFE_INTEGER,
+      createdAt + this.getTimeoutMs(),
+    );
     return {
       id: requestId,
-      createdAt: Date.now(),
+      createdAt,
+      expiresAt,
       requesterSessionId,
       targetSessionId,
       requesterAgentName,
@@ -348,22 +346,24 @@ export class ParentAuthorizer implements TerminalAuthorizer {
 
   private async pollForForwardedResponse(
     location: PermissionForwardingLocation,
-    request: ForwardedPermissionRequest,
+    request: ForwardedPermissionRequestWithDeadline,
     requestPath: string,
     responsePath: string,
     target: PermissionForwardingTarget,
   ): Promise<PermissionPromptDecision> {
     const { id: requestId, requesterAgentName, targetSessionId } = request;
-    const timeoutMs = this.getTimeoutMs();
-    const deadline = Date.now() + timeoutMs;
+    const deadline = request.expiresAt;
     let unservedSince: number | null = null;
 
-    while (Date.now() < deadline) {
+    while (!isForwardingExpiryReached(deadline)) {
       if (existsSync(responsePath)) {
         const response = readForwardedPermissionResponse(
           this.logger,
           responsePath,
         );
+        if (isForwardingExpiryReached(deadline)) {
+          break;
+        }
         const relayed = response ? relayDecision(response) : null;
         this.logger.review("forwarded_permission.response_received", {
           requestId,
@@ -405,7 +405,9 @@ export class ParentAuthorizer implements TerminalAuthorizer {
         );
       }
 
-      await sleep(PERMISSION_FORWARDING_POLL_INTERVAL_MS);
+      await sleep(
+        Math.min(PERMISSION_FORWARDING_POLL_INTERVAL_MS, deadline - Date.now()),
+      );
     }
 
     logPermissionForwardingWarning(
@@ -417,11 +419,11 @@ export class ParentAuthorizer implements TerminalAuthorizer {
       requesterAgentName,
       targetSessionId,
       responsePath,
+      createdAt: request.createdAt,
+      expiresAt: deadline,
     });
-    this.discardRequest(location, requestPath);
-    return abandon(
-      `Session '${target.sessionId}' did not answer within ${timeoutMs / 1000}s`,
-    );
+    this.discardRequest(location, requestPath, responsePath);
+    return FORWARDED_PERMISSION_TIMEOUT_DECISION;
   }
 
   /**

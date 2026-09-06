@@ -9,8 +9,8 @@
 1. **Review log — waiting** — write `permission_request.waiting` before the authorizer is consulted.
 2. **`authorizer.authorize(details)`** — the selected `Authorizer` (`LocalUserAuthorizer`, `ParentAuthorizer`, or `DenyingAuthorizer`) resolves the decision.
    The UI-prompt broadcast and the UI/forwarding branching this class previously owned now live on the individual `Authorizer` implementations — see [architecture.md's authority model](architecture.md#the-authority-model).
-3. **Review log — outcome** — write `permission_request.approved` or `permission_request.denied` with the final decision state, any denial reason, and the decision's `decidedBy` provenance ([#726]).
-   The denied entry's `resolution` is the decision state, or `confirmation_unavailable` when the decision carries that marker — a `DenyingAuthorizer` denial, i.e. no live authority was reachable (a no-UI, non-subagent session) ([#556]).
+3. **Review log — outcome** — normalize an expired forwarded decision, then write `permission_request.approved` or `permission_request.denied` with the final decision state, any denial reason, and the decision's `decidedBy` provenance ([#726]).
+   The denied entry's `resolution` is the decision state, or `confirmation_unavailable` when the decision carries that marker — either no live authority was reachable or a forwarded request exhausted its deadline.
 
 Only the outcome entries carry `decidedBy`; the waiting entry does not, because nothing has decided yet and a `null` there would read as decided-by-nobody.
 The prompter records what the decision states rather than deriving it, which lets one entry distinguish a human at the dialog, an unreachable authority, and another session's answer.
@@ -18,7 +18,9 @@ The prompter records what the decision states rather than deriving it, which let
 `PreToolUseHookGate` resolves hook `allow` and `deny` before an ask reaches this class.
 The dialog fallback resolver preserves user session grants and converts every other production tool result to `ask`; yolo rewriting is disabled in the composition root.
 `LocalUserAuthorizer` admits the complete prompt transaction through `SerialInteractivePromptQueue`, so the UI-prompt broadcast occurs only when that transaction reaches the front of the queue.
-Session teardown invalidates the queue, and the inline prompt observes the queue's abort signal so its active component also settles.
+A forwarded request supplies one absolute deadline and request-local abort signal; queue time and every UI step consume the same budget, while direct prompts supply no such deadline.
+The queue keeps ordering tied to the underlying interaction cleanup, so cancelling a queued request cannot bypass an unfinished predecessor.
+Session teardown still invalidates the whole queue, and the inline prompt observes the combined abort signal so its active component also settles.
 
 ## Why a class instead of a free function
 

@@ -49,6 +49,10 @@ function asNullableDisplayString(value: unknown): string | null | undefined {
   return undefined;
 }
 
+function isEpochMilliseconds(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
 /**
  * Narrow an unknown value to a `ForwardedSessionApproval`, or `undefined`.
  *
@@ -395,7 +399,10 @@ export function readForwardedPermissionRequest(
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- JSON.parse can return null for the string "null"
       !parsed ||
       typeof parsed.id !== "string" ||
-      typeof parsed.createdAt !== "number" ||
+      !isEpochMilliseconds(parsed.createdAt) ||
+      (parsed.expiresAt !== undefined &&
+        (!isEpochMilliseconds(parsed.expiresAt) ||
+          parsed.expiresAt <= parsed.createdAt)) ||
       typeof parsed.requesterSessionId !== "string" ||
       typeof parsed.targetSessionId !== "string" ||
       typeof parsed.requesterAgentName !== "string"
@@ -410,6 +417,7 @@ export function readForwardedPermissionRequest(
     return {
       id: parsed.id,
       createdAt: parsed.createdAt,
+      expiresAt: parsed.expiresAt,
       requesterSessionId: parsed.requesterSessionId,
       targetSessionId: parsed.targetSessionId,
       requesterAgentName: parsed.requesterAgentName,

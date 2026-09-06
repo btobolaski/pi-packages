@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { SerialInteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import { LocalUserAuthorizer } from "#src/authority/local-user-authorizer";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
+import { FORWARDED_PERMISSION_TIMEOUT_DECISION } from "#src/authority/permission-forwarding";
 import type { requestPermissionDecision } from "#src/authority/permission-prompt-component";
 import type { PromptPermissionDetails } from "#src/authority/permission-prompter";
 import { DECIDED_BY_HUMAN } from "#test/helpers/decision-fixtures";
+import { makeForwardingDeadline } from "#test/helpers/forwarding-fixtures";
 import {
   makePromptDetails,
   makePromptPayload,
@@ -159,6 +161,95 @@ describe("LocalUserAuthorizer", () => {
       expect.anything(),
       { sessionLabel: "Yes, for 'read' tool" },
     );
+  });
+
+  it("returns automatic unavailability for a pre-cancelled forwarded request", async () => {
+    const { deps, events, decisionFn, setPromptIndicator } = makeDeps();
+    const authorizer = new LocalUserAuthorizer(deps);
+    const { controller, forwardingDeadline } = makeForwardingDeadline();
+    controller.abort();
+
+    await expect(
+      authorizer.authorize(
+        makeDetails({
+          forwarding: {
+            requesterAgentName: "Explore",
+            requesterSessionId: "child-session",
+          },
+          forwardingDeadline,
+        }),
+      ),
+    ).resolves.toEqual(FORWARDED_PERMISSION_TIMEOUT_DECISION);
+    expect(setPromptIndicator).not.toHaveBeenCalled();
+    expect(events.emit).not.toHaveBeenCalled();
+    expect(decisionFn).not.toHaveBeenCalled();
+  });
+
+  it("does not open a forwarded dialog when its deadline expires during indicator activation", async () => {
+    const activation = Promise.withResolvers<void>(); // eslint-disable-line @typescript-eslint/no-invalid-void-type -- Promise.withResolvers<void> is valid; rule does not allow void in generic fn call type args
+    const setPromptIndicator = vi.fn((active: boolean) =>
+      active ? activation.promise : Promise.resolve(),
+    );
+    const { deps, events, decisionFn } = makeDeps({ setPromptIndicator });
+    const authorizer = new LocalUserAuthorizer(deps);
+    const { controller, forwardingDeadline } = makeForwardingDeadline();
+    const pending = authorizer.authorize(
+      makeDetails({
+        forwarding: {
+          requesterAgentName: "Explore",
+          requesterSessionId: "child-session",
+        },
+        forwardingDeadline,
+      }),
+    );
+    await vi.waitFor(() =>
+      expect(setPromptIndicator).toHaveBeenCalledWith(true),
+    );
+
+    controller.abort();
+    activation.resolve();
+
+    await expect(pending).resolves.toMatchObject({
+      approved: false,
+      forwardingTimedOut: true,
+      decidedBy: { kind: "unavailable" },
+    });
+    await vi.waitFor(() =>
+      expect(setPromptIndicator).toHaveBeenNthCalledWith(2, false),
+    );
+    expect(events.emit).not.toHaveBeenCalled();
+    expect(decisionFn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a dialog approval completed after the forwarding deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    try {
+      const requestPermissionDecision = vi.fn(async () => {
+        vi.setSystemTime(2000);
+        return {
+          approved: true,
+          state: "approved" as const,
+          decidedBy: DECIDED_BY_HUMAN,
+        };
+      });
+      const { deps, setPromptIndicator } = makeDeps({
+        requestPermissionDecision,
+      });
+      const authorizer = new LocalUserAuthorizer(deps);
+      const { forwardingDeadline } = makeForwardingDeadline(1500);
+
+      await expect(
+        authorizer.authorize(makeDetails({ forwardingDeadline })),
+      ).resolves.toMatchObject({
+        approved: false,
+        forwardingTimedOut: true,
+        decidedBy: { kind: "unavailable" },
+      });
+      expect(setPromptIndicator).toHaveBeenNthCalledWith(2, false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("propagates indicator activation failure before opening the dialog", async () => {

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -53,6 +53,7 @@ afterEach(() => {
   temp?.cleanup();
   temp = undefined;
   vi.unstubAllEnvs();
+  vi.useRealTimers();
 });
 
 function readResponse(
@@ -338,6 +339,10 @@ describe("processInbox — recorded-authority resolution", () => {
       forwarding: {
         requesterAgentName: "Explore",
         requesterSessionId: "child-session",
+      },
+      forwardingDeadline: {
+        signal: expect.any(AbortSignal),
+        expiresAt: expect.any(Number),
       },
       accessIntent: {
         surface: "bash",
@@ -774,6 +779,217 @@ describe("processInbox — the serving node's chain adjudicates a forwarded ask"
       },
     });
     expect(requestPermissionDecision).not.toHaveBeenCalled();
+  });
+});
+
+describe("processInbox — request deadline", () => {
+  const servingContext = (): ForwarderContext =>
+    makeForwarderContext({ hasUI: true, sessionId: "parent-session" });
+
+  function makeDeadlineServer(
+    overrides: Partial<ForwardedRequestServerDeps> = {},
+  ): ForwardedRequestServer {
+    if (!temp) throw new Error("expected forwarding temp directory");
+    return new ForwardedRequestServer(
+      makeServerDeps({ forwardingDir: temp.forwardingDir, ...overrides }),
+    );
+  }
+
+  test("retires an already-expired request before policy or escalation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1100);
+    temp = createForwardingTempDir("parent-session");
+    temp.writeRequest({
+      id: "req-expired",
+      createdAt: 1000,
+      expiresAt: 1100,
+      accessIntent: makeForwardedAccessIntent(),
+    });
+    const resolve = vi.fn(() => makeCheckResult({ state: "allow" }));
+    const escalate = vi.fn();
+    const emitDecision = vi.fn();
+    const server = makeDeadlineServer({
+      policy: { resolve },
+      escalator: { escalate },
+      broadcaster: { emitDecision },
+    });
+
+    await server.processInbox(servingContext());
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(escalate).not.toHaveBeenCalled();
+    expect(emitDecision).toHaveBeenCalledOnce();
+    expect(emitDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-expired",
+        result: "deny",
+        resolution: "confirmation_unavailable",
+      }),
+    );
+    expect(
+      existsSync(join(temp.location.requestsDir, "req-expired.json")),
+    ).toBe(false);
+    expect(
+      existsSync(join(temp.location.responsesDir, "req-expired.json")),
+    ).toBe(false);
+  });
+
+  test("passes only the remaining request budget to escalation", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1090);
+    temp = createForwardingTempDir("parent-session");
+    temp.writeRequest({
+      id: "req-remaining",
+      createdAt: 1000,
+      expiresAt: 1100,
+    });
+    const pending = Promise.withResolvers<PermissionPromptDecision>();
+    let details: PromptPermissionDetails | undefined;
+    const escalate = vi.fn((ask: PromptPermissionDetails) => {
+      details = ask;
+      return pending.promise;
+    });
+    const server = makeDeadlineServer({ escalator: { escalate } });
+
+    const processing = server.processInbox(servingContext());
+    await Promise.resolve();
+
+    expect(details?.forwardingDeadline?.expiresAt).toBe(1100);
+    expect(details?.forwardingDeadline?.signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(9);
+    expect(details?.forwardingDeadline?.signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await processing;
+    expect(details?.forwardingDeadline?.signal.aborted).toBe(true);
+  });
+
+  test("reschedules deadlines beyond Node's maximum timer delay", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const maxTimerDelayMs = 2_147_483_647;
+    const expiresAt = 1000 + maxTimerDelayMs + 100;
+    temp = createForwardingTempDir("parent-session");
+    temp.writeRequest({
+      id: "req-long-deadline",
+      createdAt: 1000,
+      expiresAt,
+    });
+    const pending = Promise.withResolvers<PermissionPromptDecision>();
+    let signal: AbortSignal | undefined;
+    const escalate = vi.fn((details: PromptPermissionDetails) => {
+      signal = details.forwardingDeadline?.signal;
+      return pending.promise;
+    });
+    const server = makeDeadlineServer({ escalator: { escalate } });
+
+    const processing = server.processInbox(servingContext());
+    await Promise.resolve();
+
+    await vi.advanceTimersByTimeAsync(maxTimerDelayMs);
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(99);
+    expect(signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await processing;
+    expect(signal?.aborted).toBe(true);
+  });
+
+  test("prevents a late non-cooperating serving-session approval from recording a grant or response", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    temp = createForwardingTempDir("parent-session");
+    temp.writeRequest({
+      id: "req-late-grant",
+      createdAt: 1000,
+      expiresAt: 1100,
+      sessionApproval: { surface: "bash", patterns: ["git *"] },
+    });
+    const late = Promise.withResolvers<PermissionPromptDecision>();
+    const recordSessionApproval = vi.fn();
+    const emitDecision = vi.fn();
+    const server = makeDeadlineServer({
+      escalator: { escalate: vi.fn(() => late.promise) },
+      recorder: { recordSessionApproval },
+      broadcaster: { emitDecision },
+    });
+
+    const processing = server.processInbox(servingContext());
+    await vi.advanceTimersByTimeAsync(100);
+    await processing;
+
+    expect(recordSessionApproval).not.toHaveBeenCalled();
+    expect(emitDecision).toHaveBeenCalledTimes(1);
+    expect(emitDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestId: "req-late-grant",
+        result: "deny",
+        resolution: "confirmation_unavailable",
+      }),
+    );
+    expect(
+      existsSync(join(temp.location.responsesDir, "req-late-grant.json")),
+    ).toBe(false);
+
+    late.resolve({
+      approved: true,
+      state: "approved_for_serving_session",
+      decidedBy: DECIDED_BY_HUMAN,
+    });
+    await Promise.resolve();
+    expect(recordSessionApproval).not.toHaveBeenCalled();
+    expect(emitDecision).toHaveBeenCalledTimes(1);
+  });
+
+  test("fails closed when the requester disappears during escalation", async () => {
+    temp = createForwardingTempDir("parent-session");
+    const requestPath = join(temp.location.requestsDir, "req-removed.json");
+    temp.writeRequest({
+      id: "req-removed",
+      sessionApproval: { surface: "bash", patterns: ["git *"] },
+    });
+    const recordSessionApproval = vi.fn();
+    const emitDecision = vi.fn();
+    const escalate = vi.fn(() => {
+      unlinkSync(requestPath);
+      return Promise.resolve<PermissionPromptDecision>({
+        approved: true,
+        state: "approved_for_serving_session",
+        decidedBy: DECIDED_BY_HUMAN,
+      });
+    });
+    const server = makeDeadlineServer({
+      escalator: { escalate },
+      recorder: { recordSessionApproval },
+      broadcaster: { emitDecision },
+    });
+
+    await server.processInbox(servingContext());
+
+    expect(recordSessionApproval).not.toHaveBeenCalled();
+    expect(emitDecision).toHaveBeenCalledWith(
+      expect.objectContaining({
+        result: "deny",
+        resolution: "confirmation_unavailable",
+      }),
+    );
+    expect(
+      existsSync(join(temp.location.responsesDir, "req-removed.json")),
+    ).toBe(false);
+  });
+
+  test("keeps legacy requests on the serving path without a parent deadline", async () => {
+    temp = createForwardingTempDir("parent-session");
+    temp.writeRequest({ id: "req-legacy", expiresAt: undefined });
+    const escalator = makeCapturingEscalator();
+    const server = makeDeadlineServer({ escalator });
+
+    await server.processInbox(servingContext());
+
+    expect(escalator.lastDetails().forwardingDeadline).toBeUndefined();
+    expect(readResponse(temp, "req-legacy")).toMatchObject({
+      approved: true,
+      state: "approved",
+    });
   });
 });
 

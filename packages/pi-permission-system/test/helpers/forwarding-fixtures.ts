@@ -6,10 +6,9 @@
  * `ForwarderContext` / UI-decision builders that the split-out per-class test
  * files repeated per test.
  *
- * Consumed by test/authority/approval-escalator.test.ts (the escalation-up
- * role, ParentAuthorizer since #555) and test/authority/forwarded-request-server.test.ts
- * (the serving-down role) — both extracted from `PermissionForwarder` by Phase 8
- * Step 6 (#530).
+ * Consumed by the authority tests for shared forwarding wire, deadline, and
+ * routing setup. ParentAuthorizer and ForwardedRequestServer were extracted
+ * from `PermissionForwarder` by Phase 8 Step 6 (#530).
  * The `{ emit, on }` events mock is not duplicated here — reuse `makeEvents`
  * from `#test/helpers/handler-fixtures`.
  */
@@ -31,6 +30,7 @@ import {
   createPermissionForwardingLocation,
   type ForwardedAccessIntent,
   type ForwardedPermissionRequest,
+  type ForwardingDeadline,
   PERMISSION_FORWARDING_TIMEOUT_MS,
   type PermissionForwardingLocation,
 } from "#src/authority/permission-forwarding";
@@ -44,6 +44,18 @@ import {
 } from "#src/authority/subagent-registry";
 import { makeCheckResult } from "#test/helpers/handler-fixtures";
 import { makePromptPayload } from "#test/helpers/prompt-details-fixtures";
+
+/** A fresh request-local deadline and the controller that owns its signal. */
+export function makeForwardingDeadline(expiresAt = Date.now() + 1000): {
+  controller: AbortController;
+  forwardingDeadline: ForwardingDeadline;
+} {
+  const controller = new AbortController();
+  return {
+    controller,
+    forwardingDeadline: { signal: controller.signal, expiresAt },
+  };
+}
 
 /** Handle over a temp forwarding directory; register `cleanup` in `afterEach`. */
 export interface ForwardingTempDir {
@@ -81,9 +93,11 @@ export function createForwardingTempDir(
     forwardingDir,
     location,
     writeRequest(overrides = {}) {
+      const createdAt = Date.now();
       const request: ForwardedPermissionRequest = {
         id: "req-forwarded",
-        createdAt: Date.now(),
+        createdAt,
+        expiresAt: createdAt + PERMISSION_FORWARDING_TIMEOUT_MS,
         requesterSessionId: "child-session",
         targetSessionId: sessionId,
         requesterAgentName: "Explore",

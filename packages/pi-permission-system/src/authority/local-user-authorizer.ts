@@ -4,6 +4,12 @@ import type {
   PermissionPromptDecision,
   RequestPermissionOptions,
 } from "#src/authority/permission-dialog";
+import {
+  FORWARDED_PERMISSION_TIMEOUT_DECISION,
+  ForwardedPermissionDeadlineExpiredError,
+  type ForwardingDeadline,
+  isForwardingDeadlineExpired,
+} from "#src/authority/permission-forwarding";
 import type {
   PermissionPromptUi,
   PromptPreferences,
@@ -49,31 +55,66 @@ export interface LocalUserAuthorizerDeps {
 export class LocalUserAuthorizer implements TerminalAuthorizer {
   constructor(private readonly deps: LocalUserAuthorizerDeps) {}
 
-  authorize(
+  async authorize(
     details: PromptPermissionDetails,
   ): Promise<PermissionPromptDecision> {
-    return this.deps.promptQueue.run(async (signal) => {
-      const uiPrompt = buildUiPrompt(details);
-      await this.deps.setPromptIndicator(true);
-      try {
-        emitUiPromptEvent(this.deps.events, uiPrompt);
-        return await this.deps.requestPermissionDecision(
-          {
-            mode: this.deps.mode,
-            ui: this.deps.ui,
-            ...this.deps.getPromptPreferences(),
-            signal,
-          },
-          details.forwarding
-            ? "Permission Required (Subagent)"
-            : "Permission Required",
-          details.payload,
-          buildRequestOptions(details),
-        );
-      } finally {
-        await this.deps.setPromptIndicator(false);
+    const { forwardingDeadline } = details;
+    if (isForwardingDeadlineExpired(forwardingDeadline)) {
+      return FORWARDED_PERMISSION_TIMEOUT_DECISION;
+    }
+
+    try {
+      return await this.deps.promptQueue.run(async (signal) => {
+        assertActive(forwardingDeadline, signal);
+        const uiPrompt = buildUiPrompt(details);
+        await this.deps.setPromptIndicator(true);
+        try {
+          assertActive(forwardingDeadline, signal);
+          emitUiPromptEvent(this.deps.events, uiPrompt);
+          const requestOptions = buildRequestOptions(details);
+          const decision = await this.deps.requestPermissionDecision(
+            {
+              mode: this.deps.mode,
+              ui: this.deps.ui,
+              ...this.deps.getPromptPreferences(),
+              signal,
+            },
+            details.forwarding
+              ? "Permission Required (Subagent)"
+              : "Permission Required",
+            details.payload,
+            forwardingDeadline
+              ? {
+                  ...(requestOptions ?? {}),
+                  forwardingDeadline: {
+                    ...forwardingDeadline,
+                    signal,
+                  },
+                }
+              : requestOptions,
+          );
+          assertActive(forwardingDeadline, signal);
+          return decision;
+        } finally {
+          await this.deps.setPromptIndicator(false);
+        }
+      }, forwardingDeadline?.signal);
+    } catch (error) {
+      if (isForwardingDeadlineExpired(forwardingDeadline)) {
+        return FORWARDED_PERMISSION_TIMEOUT_DECISION;
       }
-    });
+      throw error;
+    }
+  }
+}
+
+function assertActive(
+  deadline: ForwardingDeadline | undefined,
+  signal: AbortSignal,
+): void {
+  signal.throwIfAborted();
+  if (isForwardingDeadlineExpired(deadline)) {
+    throw new ForwardedPermissionDeadlineExpiredError();
   }
 }
 

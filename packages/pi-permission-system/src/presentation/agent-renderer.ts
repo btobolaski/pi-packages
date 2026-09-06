@@ -1,3 +1,4 @@
+import { FORWARDED_PERMISSION_TIMEOUT_REASON } from "#src/authority/permission-forwarding";
 import { EXTENSION_ID } from "#src/extension-config";
 import { DEFAULT_RENDER_BUDGET } from "#src/presentation/dialog-renderer";
 import {
@@ -32,7 +33,11 @@ import {
  * rather than structurally bounded.
  */
 
-/** Attribution tag on every block reason this extension produces. */
+/**
+ * Attribution tag on ordinary block reasons this extension produces.
+ * Forwarding timeout is the narrow exception: its complete model-visible
+ * contract is the shared reason without additional attribution.
+ */
 export const EXTENSION_TAG = `[${EXTENSION_ID}]`;
 
 /** How much room the flagged element has, as the operator configured it. */
@@ -63,6 +68,11 @@ export function renderUserDenial(
     `The user denied this ${identification(payload, budget, "call")}${boundaryClause(payload)}${provenanceClause(payload)}.`,
     denialReason,
   );
+}
+
+/** The exact agent-facing render for an unanswered forwarded request. */
+export function renderForwardingTimeoutDenial(): string {
+  return FORWARDED_PERMISSION_TIMEOUT_REASON;
 }
 
 /** The agent-facing render when no live authority could answer the ask. */

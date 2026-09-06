@@ -1,16 +1,25 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { DecisionSource } from "#src/authority/decision-source";
 import {
   type ForwarderContext,
   getSessionId,
 } from "#src/authority/forwarder-context";
-import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import {
+  createUnavailablePermissionDecision,
+  type PermissionPromptDecision,
+} from "#src/authority/permission-dialog";
+import {
+  FORWARDED_PERMISSION_TIMEOUT_DECISION,
   type ForwardedAccessFacts,
   type ForwardedAccessIntent,
+  ForwardedPermissionDeadlineExpiredError,
   type ForwardedPermissionRequest,
   type ForwardedPermissionResponse,
+  type ForwardingDeadline,
   isForwardedPermissionRequestForSession,
+  isForwardingDeadlineExpired,
+  isForwardingExpiryReached,
   type PermissionForwardingLocation,
 } from "#src/authority/permission-forwarding";
 import type { SubagentSessionRegistry } from "#src/authority/subagent-registry";
@@ -67,6 +76,65 @@ export interface ServingPolicy {
   resolve(intent: ForwardedAccessIntent): PermissionCheckResult;
 }
 
+interface DeadlineHandle {
+  deadline: ForwardingDeadline;
+  dispose(): void;
+}
+
+interface ResolvedForwardedDecision {
+  decision: PermissionPromptDecision;
+  details?: PromptPermissionDetails;
+}
+
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+function startDeadline(expiresAt: number): DeadlineHandle {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // ponytail: rescheduling only serves overrides beyond Node's 24.8-day timer
+  // ceiling; replace it with one timer if configuration ever gains that cap.
+  const schedule = (): void => {
+    if (isForwardingExpiryReached(expiresAt)) {
+      controller.abort(new ForwardedPermissionDeadlineExpiredError());
+      return;
+    }
+    timer = setTimeout(
+      schedule,
+      Math.min(expiresAt - Date.now(), MAX_TIMER_DELAY_MS),
+    );
+  };
+  schedule();
+  return {
+    deadline: { signal: controller.signal, expiresAt },
+    dispose() {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+    },
+  };
+}
+
+async function resolveBeforeDeadline(
+  interaction: Promise<PermissionPromptDecision>,
+  deadline: ForwardingDeadline,
+): Promise<PermissionPromptDecision> {
+  if (deadline.signal.aborted) {
+    return FORWARDED_PERMISSION_TIMEOUT_DECISION;
+  }
+  let onAbort: (() => void) | undefined;
+  const expired = new Promise<PermissionPromptDecision>((resolve) => {
+    onAbort = () => resolve(FORWARDED_PERMISSION_TIMEOUT_DECISION);
+    deadline.signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([interaction, expired]);
+  } finally {
+    if (onAbort) {
+      deadline.signal.removeEventListener("abort", onAbort);
+    }
+  }
+}
+
 /** Constructor config for `ForwardedRequestServer`. */
 export interface ForwardedRequestServerDeps {
   forwardingDir: string;
@@ -108,6 +176,7 @@ export interface ForwardedRequestServerDeps {
  */
 function buildForwardedAskDetails(
   request: ForwardedPermissionRequest,
+  forwardingDeadline?: ForwardingDeadline,
 ): PromptPermissionDetails {
   const payload = buildForwardedAskPayload(request);
   return {
@@ -121,6 +190,7 @@ function buildForwardedAskDetails(
       requesterAgentName: request.requesterAgentName || null,
       requesterSessionId: request.requesterSessionId || null,
     },
+    ...(forwardingDeadline ? { forwardingDeadline } : {}),
     // Carries the child's suggestion so LocalUserAuthorizer can offer the
     // whole-session grant scope; absent for a legacy/version-skew request.
     ...(request.sessionApproval
@@ -332,18 +402,91 @@ export class ForwardedRequestServer implements InboxProcessor {
       requestPath,
     };
 
-    const decision = await this.resolveDecision(
-      request,
-      forwardedPermissionLogDetails,
-    );
+    if (!existsSync(requestPath)) {
+      this.logger.review("forwarded_permission.request_abandoned", {
+        ...forwardedPermissionLogDetails,
+        resolution: "confirmation_unavailable",
+      });
+      return;
+    }
 
-    this.recordForwardedDecision(
-      request,
-      location,
-      requestPath,
-      currentSessionId,
-      this.applyGrantScope(request, decision, forwardedPermissionLogDetails),
-    );
+    if (
+      request.expiresAt !== undefined &&
+      isForwardingExpiryReached(request.expiresAt)
+    ) {
+      const details = buildForwardedAskDetails(request);
+      this.broadcaster.emitDecision(
+        buildServedDecisionEvent(
+          details,
+          FORWARDED_PERMISSION_TIMEOUT_DECISION,
+        ),
+      );
+      this.recordForwardedDecision(
+        request,
+        location,
+        requestPath,
+        currentSessionId,
+        FORWARDED_PERMISSION_TIMEOUT_DECISION,
+      );
+      return;
+    }
+
+    const deadline =
+      request.expiresAt === undefined
+        ? undefined
+        : startDeadline(request.expiresAt);
+    try {
+      const resolved = await this.resolveDecision(
+        request,
+        forwardedPermissionLogDetails,
+        deadline?.deadline,
+      );
+      const decision = this.guardDecision(
+        request,
+        requestPath,
+        resolved.decision,
+        deadline?.deadline,
+      );
+      const responseDecision = this.applyGrantScope(
+        request,
+        decision,
+        forwardedPermissionLogDetails,
+      );
+      if (resolved.details) {
+        this.broadcaster.emitDecision(
+          buildServedDecisionEvent(resolved.details, decision),
+        );
+      }
+      this.recordForwardedDecision(
+        request,
+        location,
+        requestPath,
+        currentSessionId,
+        responseDecision,
+      );
+    } finally {
+      deadline?.dispose();
+    }
+  }
+
+  private guardDecision(
+    request: ForwardedPermissionRequest,
+    requestPath: string,
+    decision: PermissionPromptDecision,
+    deadline?: ForwardingDeadline,
+  ): PermissionPromptDecision {
+    const expired = deadline
+      ? isForwardingDeadlineExpired(deadline)
+      : request.expiresAt !== undefined &&
+        isForwardingExpiryReached(request.expiresAt);
+    if (expired) {
+      return FORWARDED_PERMISSION_TIMEOUT_DECISION;
+    }
+    return existsSync(requestPath)
+      ? decision
+      : createUnavailablePermissionDecision(
+          "The forwarded permission requester is no longer waiting",
+        );
   }
 
   /**
@@ -400,8 +543,9 @@ export class ForwardedRequestServer implements InboxProcessor {
     decision: PermissionPromptDecision,
   ): void {
     const responsePath = join(location.responsesDir, `${request.id}.json`);
+    const finalDecision = this.guardDecision(request, requestPath, decision);
     this.logger.review(
-      decision.approved
+      finalDecision.approved
         ? "forwarded_permission.approved"
         : "forwarded_permission.denied",
       {
@@ -411,21 +555,39 @@ export class ForwardedRequestServer implements InboxProcessor {
         requesterSessionId: request.requesterSessionId,
         targetSessionId: request.targetSessionId,
         responsePath,
-        resolution: decision.state,
-        denialReason: decision.denialReason ?? null,
-        decidedBy: decision.decidedBy,
+        resolution: servedResolution(finalDecision),
+        denialReason: finalDecision.denialReason ?? null,
+        decidedBy: finalDecision.decidedBy,
       },
     );
+
+    if (finalDecision.forwardingTimedOut) {
+      safeDeleteFile(
+        this.logger,
+        responsePath,
+        `${location.label} forwarded permission response`,
+      );
+      safeDeleteFile(
+        this.logger,
+        requestPath,
+        `${location.label} forwarded permission request`,
+      );
+      return;
+    }
+    if (!existsSync(requestPath)) {
+      return;
+    }
+
     try {
       writeJsonFileAtomic(this.logger, responsePath, {
-        approved: decision.approved,
-        state: decision.state,
-        denialReason: decision.denialReason,
+        approved: finalDecision.approved,
+        state: finalDecision.state,
+        denialReason: finalDecision.denialReason,
         responderSessionId: currentSessionId,
         respondedAt: Date.now(),
         // Carried onto the wire so the requester can name what decided inside
         // this session, not merely that this session answered (#726).
-        decidedBy: decision.decidedBy,
+        decidedBy: finalDecision.decidedBy,
       } satisfies ForwardedPermissionResponse);
     } catch (error) {
       logPermissionForwardingError(
@@ -455,7 +617,8 @@ export class ForwardedRequestServer implements InboxProcessor {
   private async resolveDecision(
     request: ForwardedPermissionRequest,
     logDetails: Record<string, unknown>,
-  ): Promise<PermissionPromptDecision> {
+    forwardingDeadline?: ForwardingDeadline,
+  ): Promise<ResolvedForwardedDecision> {
     const check = request.accessIntent
       ? this.policy.resolve(request.accessIntent)
       : null;
@@ -477,19 +640,20 @@ export class ForwardedRequestServer implements InboxProcessor {
           : "forwarded_permission.auto_denied",
         { ...logDetails, decidedBy },
       );
-      return approved
-        ? { approved: true, state: "approved", decidedBy }
-        : { approved: false, state: "denied", decidedBy };
+      return {
+        decision: approved
+          ? { approved: true, state: "approved", decidedBy }
+          : { approved: false, state: "denied", decidedBy },
+      };
     }
 
     this.logger.review("forwarded_permission.prompted", logDetails);
-    const details = buildForwardedAskDetails(request);
-    const decision = await this.escalateAsk(details);
-    // Announced before the grant-scope translation and before the response is
-    // written: the ask this session broadcast is over once someone here has
-    // answered it, whatever becomes of the file the child polls for (#610).
-    this.broadcaster.emitDecision(buildServedDecisionEvent(details, decision));
-    return decision;
+    const details = buildForwardedAskDetails(request, forwardingDeadline);
+    const escalation = this.escalateAsk(details);
+    const decision = forwardingDeadline
+      ? await resolveBeforeDeadline(escalation, forwardingDeadline)
+      : await escalation;
+    return { decision, details };
   }
 
   /**

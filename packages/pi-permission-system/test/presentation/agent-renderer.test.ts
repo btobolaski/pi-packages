@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   EXTENSION_TAG,
+  renderForwardingTimeoutDenial,
   renderPolicyDenial,
   renderUnavailableDenial,
   renderUserDenial,
@@ -332,6 +333,14 @@ describe("renderUserDenial", () => {
       ),
     ).toBe(
       "[pi-permission-system] The user denied this 'path' call for tool 'read' for path '/etc/passwd' (rule '/etc/*'). Reason: not that file.",
+    );
+  });
+});
+
+describe("renderForwardingTimeoutDenial", () => {
+  it("returns the complete model-visible timeout reason without attribution", () => {
+    expect(renderForwardingTimeoutDenial()).toBe(
+      "Auto-approval could not approve this tool use",
     );
   });
 });

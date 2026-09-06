@@ -184,6 +184,50 @@ describe("forwarding artifact permissions", () => {
 
 // ── readForwardedPermissionRequest ─────────────────────────────────────────
 
+describe("readForwardedPermissionRequest — timing fields", () => {
+  let root: string;
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function writeAndRead(raw: unknown): ForwardedPermissionRequest | null {
+    root = mkdtempSync(join(tmpdir(), "io-timing-"));
+    const filePath = join(root, "req.json");
+    writeJsonFileAtomic(null, filePath, raw);
+    return readForwardedPermissionRequest(null, filePath);
+  }
+
+  function baseRequest() {
+    return {
+      id: "req-1",
+      createdAt: 1000,
+      requesterSessionId: "child-session",
+      targetSessionId: "parent-session",
+      requesterAgentName: "researcher",
+    };
+  }
+
+  it("round-trips an absolute deadline", () => {
+    expect(
+      writeAndRead({ ...baseRequest(), expiresAt: 121_000 })?.expiresAt,
+    ).toBe(121_000);
+  });
+
+  it("keeps a legacy request without a deadline", () => {
+    expect(writeAndRead(baseRequest())?.expiresAt).toBeUndefined();
+  });
+
+  it.each([
+    ["invalid creation time", { createdAt: -1 }],
+    ["non-numeric deadline", { expiresAt: "121000" }],
+    ["unsafe deadline", { expiresAt: Number.MAX_SAFE_INTEGER + 1 }],
+    ["deadline not after creation", { expiresAt: 1000 }],
+  ])("rejects a request with %s", (_name, fields) => {
+    expect(writeAndRead({ ...baseRequest(), ...fields })).toBeNull();
+  });
+});
+
 describe("readForwardedPermissionRequest — accessIntent field", () => {
   let root: string;
 
@@ -465,6 +509,13 @@ describe("readForwardedPermissionResponse — decidedBy field", () => {
 
   it("leaves decidedBy absent for an older responder", () => {
     expect(writeAndRead(baseResponse())?.decidedBy).toBeUndefined();
+  });
+
+  it("does not add request deadline or runtime timeout fields", () => {
+    const response = writeAndRead(baseResponse());
+    expect(response).not.toHaveProperty("expiresAt");
+    expect(response).not.toHaveProperty("forwardingTimedOut");
+    expect(response).not.toHaveProperty("confirmationUnavailable");
   });
 });
 

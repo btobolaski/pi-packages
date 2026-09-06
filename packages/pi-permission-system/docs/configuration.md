@@ -30,7 +30,7 @@ An untrusted project therefore cannot replace global hooks or runtime settings.
   "allowLocalEdits": true,
   "zellijTabAlert": false,
   "doublePressToConfirm": true,
-  "forwardingTimeoutMs": 600000,
+  "forwardingTimeoutMs": 120000,
   "promptMaxRows": 24,
   "promptFieldMaxWidth": 400,
   "reviewLogFieldMaxWidth": 1000,
@@ -227,11 +227,14 @@ Default: `400`.
 
 ### `forwardingTimeoutMs`
 
-This is the maximum time in milliseconds a child waits for a serving parent to answer a forwarded ask.
-An in-process target known not to be serving fails after a short grace period regardless of this value.
-Out-of-process targets use the parent's filesystem heartbeat and also fail quickly when the heartbeat is missing, stale, dead, or names another session.
+This positive integer is the maximum time in milliseconds a child waits for a serving parent to answer a forwarded ask.
+The deadline starts when the child creates the request, so it includes time queued behind another permission prompt.
+When the deadline expires, the request is denied as `Auto-approval could not approve this tool use`; a late human answer is not attributed to the human and cannot create a grant or response.
+Shorter and longer configured values override the default.
+An in-process target known not to be serving still fails after a short grace period regardless of this value.
+Out-of-process targets still use the parent's filesystem heartbeat and fail sooner when the heartbeat is missing, stale, dead, or names another session.
 
-Default: `600000`.
+Default: `120000` (two minutes).
 
 ### Logging Fields
 

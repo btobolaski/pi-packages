@@ -5,6 +5,7 @@ import { applyPermissionGate } from "#src/permission-gate";
 import { createPermissionRequestId } from "#src/permission-request-id";
 import type { ScopedPermissionResolver } from "#src/permission-resolver";
 import {
+  renderForwardingTimeoutDenial,
   renderPolicyDenial,
   renderUnavailableDenial,
   renderUserDenial,
@@ -191,7 +192,9 @@ export class GateRunner {
     const messages = {
       denyReason: renderPolicyDenial(payload, check.reason ?? null),
       unavailableReason: (decision: PermissionPromptDecision) =>
-        renderUnavailableDenial(payload, decision.denialReason ?? null),
+        decision.forwardingTimedOut
+          ? renderForwardingTimeoutDenial()
+          : renderUnavailableDenial(payload, decision.denialReason ?? null),
       userDeniedReason: (decision: PermissionPromptDecision) =>
         renderUserDenial(payload, decision.denialReason ?? null),
     };

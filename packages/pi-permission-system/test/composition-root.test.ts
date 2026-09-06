@@ -31,6 +31,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createPermissionForwardingLocation,
   type ForwardedPermissionRequest,
+  PERMISSION_FORWARDING_POLL_INTERVAL_MS,
 } from "#src/authority/permission-forwarding";
 import { getServingSessionRegistry } from "#src/authority/serving-registry";
 import { SUBAGENT_CHILD_SESSION_CREATED } from "#src/authority/subagent-lifecycle-events";
@@ -78,6 +79,7 @@ afterEach(() => {
   // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- Symbol-keyed global property
   delete store[SERVING_REGISTRY_KEY];
   vi.unstubAllEnvs();
+  vi.useRealTimers();
   rmSync(agentDir, { recursive: true, force: true });
 });
 
@@ -193,7 +195,7 @@ function fireSessionStart(
  *
  * Polls the parent's requests directory for the child's request file, then
  * writes an approval response so the child's forwarding poll resolves quickly
- * instead of waiting out the 10-minute timeout.
+ * instead of waiting out the default timeout.
  */
 async function approveForwardedRequest(
   forwardingDir: string,
@@ -306,6 +308,7 @@ describe("subagent registry sharing across factory instances", () => {
     );
     expect(request.targetSessionId).toBe(parentSessionId);
     expect(request.requesterSessionId).toBe(childSessionId);
+    expect(request.expiresAt).toBe(request.createdAt + 120_000);
     // The child persists the original display fields so the parent emits a
     // non-degraded `permissions:ui_prompt` event (forwarded non-degradation).
     expect(request.source).toBe("tool_call");
@@ -321,7 +324,7 @@ describe("subagent registry sharing across factory instances", () => {
 
   // The #719 failure mode: the child forwards correctly, but nothing drains
   // the parent's inbox. Before the serving registry it waited out the full
-  // ten-minute timeout and reported the block as a user denial.
+  // configured timeout and reported the block as a user denial.
   it("blocks promptly when no session is draining the parent's inbox", async () => {
     writeGlobalConfig({
       permission: { "*": "allow", external_directory: "ask" },
@@ -1284,6 +1287,93 @@ describe("forwarded grant-scope selection round-trip", () => {
     } else {
       expect(selectLog).toHaveLength(2);
     }
+
+    await parentPi.fire("session_shutdown");
+    rmSync(parentCwd, { recursive: true, force: true });
+    rmSync(childCwd, { recursive: true, force: true });
+  });
+
+  it("times out behind a direct prompt without blocking the next prompt", async () => {
+    vi.useFakeTimers();
+    const forwardingTimeoutMs = 1000;
+    writeGlobalConfig({
+      permission: { "*": "allow", demo: "ask" },
+      forwardingTimeoutMs,
+    });
+
+    const parentCwd = mkdtempSync(join(tmpdir(), "pi-perm-parent-timeout-"));
+    const childCwd = mkdtempSync(join(tmpdir(), "pi-perm-child-timeout-"));
+    const parentSessionId = "parent-timeout-1";
+    const childSessionId = "child-timeout-1";
+    const firstPrompt = Promise.withResolvers<string | undefined>();
+    let firstApproval: string | undefined;
+    let selectCount = 0;
+    const parentCtx = makeBaseCtx(parentCwd, parentSessionId, {
+      select: async (
+        _title: string,
+        options: string[],
+      ): Promise<string | undefined> => {
+        selectCount += 1;
+        if (selectCount === 1) {
+          firstApproval = options[0];
+          return firstPrompt.promise;
+        }
+        return options[0];
+      },
+    });
+
+    const parentBus = createEventBus();
+    const parentPi = makeFakePi({ events: parentBus, toolNames: ["demo"] });
+    piPermissionSystemExtension(parentPi as unknown as ExtensionAPI);
+    const childPi = makeFakePi({
+      events: createEventBus(),
+      toolNames: ["demo"],
+    });
+    piPermissionSystemExtension(childPi as unknown as ExtensionAPI);
+    await fireSessionStart(parentPi, parentCtx);
+    parentBus.emit(SUBAGENT_CHILD_SESSION_CREATED, {
+      sessionId: childSessionId,
+      parentSessionId,
+    });
+
+    const directResultPromise = parentPi.fire(
+      "tool_call",
+      { toolName: "demo", toolCallId: "demo-direct-1", input: {} },
+      parentCtx,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(selectCount).toBe(1);
+
+    const childResultPromise = childPi.fire(
+      "tool_call",
+      { toolName: "demo", toolCallId: "demo-forwarded-timeout", input: {} },
+      makeChildCtx(childCwd, childSessionId),
+    );
+    await vi.advanceTimersByTimeAsync(PERMISSION_FORWARDING_POLL_INTERVAL_MS);
+    expect(selectCount).toBe(1);
+    await vi.advanceTimersByTimeAsync(
+      forwardingTimeoutMs - PERMISSION_FORWARDING_POLL_INTERVAL_MS,
+    );
+
+    expect(await childResultPromise).toEqual({
+      block: true,
+      reason: "Auto-approval could not approve this tool use",
+    });
+    expect(selectCount).toBe(1);
+    expect(getPermissionsService()!.checkPermission("demo").state).toBe("ask");
+
+    firstPrompt.resolve(firstApproval);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await directResultPromise).toEqual({});
+
+    expect(
+      await parentPi.fire(
+        "tool_call",
+        { toolName: "demo", toolCallId: "demo-direct-2", input: {} },
+        parentCtx,
+      ),
+    ).toEqual({});
+    expect(selectCount).toBe(2);
 
     await parentPi.fire("session_shutdown");
     rmSync(parentCwd, { recursive: true, force: true });

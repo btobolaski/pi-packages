@@ -2,11 +2,58 @@ import { join } from "node:path";
 import type { DecisionSource } from "#src/authority/decision-source";
 import type { PermissionUiPromptSource } from "#src/permission-events";
 import type { PromptPayload } from "#src/presentation/prompt-payload";
-import type { PermissionDecisionState } from "./permission-dialog";
+import type {
+  PermissionDecisionState,
+  PermissionPromptDecision,
+} from "./permission-dialog";
 import type { SubagentSessionRegistry } from "./subagent-registry";
 
 export const PERMISSION_FORWARDING_POLL_INTERVAL_MS = 250;
-export const PERMISSION_FORWARDING_TIMEOUT_MS = 10 * 60 * 1000;
+export const PERMISSION_FORWARDING_TIMEOUT_MS = 2 * 60 * 1000;
+export const FORWARDED_PERMISSION_TIMEOUT_REASON =
+  "Auto-approval could not approve this tool use";
+export const FORWARDED_PERMISSION_TIMEOUT_DECISION = Object.freeze({
+  approved: false,
+  state: "denied",
+  confirmationUnavailable: true,
+  forwardingTimedOut: true,
+  denialReason: FORWARDED_PERMISSION_TIMEOUT_REASON,
+  decidedBy: Object.freeze({
+    kind: "unavailable",
+    reason: FORWARDED_PERMISSION_TIMEOUT_REASON,
+  }),
+}) satisfies Readonly<PermissionPromptDecision>;
+
+/** Runtime-only cancellation controls for one forwarded request. */
+export interface ForwardingDeadline {
+  signal: AbortSignal;
+  expiresAt: number;
+}
+
+/** Whether the wall clock has reached an absolute forwarding deadline. */
+export function isForwardingExpiryReached(expiresAt: number): boolean {
+  return Date.now() >= expiresAt;
+}
+
+/** Whether one forwarded interaction has expired by signal or wall clock. */
+export function isForwardingDeadlineExpired(
+  deadline: ForwardingDeadline | undefined,
+): boolean {
+  return Boolean(
+    deadline &&
+      (deadline.signal.aborted ||
+        isForwardingExpiryReached(deadline.expiresAt)),
+  );
+}
+
+/** Identifiable abort reason for one forwarded request reaching its deadline. */
+export class ForwardedPermissionDeadlineExpiredError extends Error {
+  override readonly name = "ForwardedPermissionDeadlineExpiredError";
+
+  constructor() {
+    super(FORWARDED_PERMISSION_TIMEOUT_REASON);
+  }
+}
 /**
  * How long an in-process forwarding target may go unserved before the child
  * gives up on it — eight poll ticks.
@@ -122,6 +169,8 @@ export interface ForwardedAccessIntent extends ForwardedAccessFacts {
 export type ForwardedPermissionRequest = {
   id: string;
   createdAt: number;
+  /** Absolute epoch-millisecond deadline selected once by the requester. */
+  expiresAt?: number;
   requesterSessionId: string;
   targetSessionId: string;
   requesterAgentName: string;

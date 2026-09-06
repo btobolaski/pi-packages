@@ -256,10 +256,10 @@ export const unifiedConfigSchema = z
     }),
     forwardingTimeoutMs: z.number().int().min(1).optional().meta({
       description:
-        "How long a subagent waits for the parent session to answer a forwarded permission request, in milliseconds. Omit to use the default (600000, ten minutes).",
+        "How long a subagent waits for the parent session to answer a forwarded permission request, in milliseconds. Omit to use the default (120000, two minutes).",
       markdownDescription:
-        "How long a subagent waits for the parent session to answer a forwarded permission request, in milliseconds.\n\nOmit to use the default (`600000`, ten minutes). A child whose in-process parent is not draining its inbox at all gives up in a couple of seconds regardless of this value, so lower it only to bound how long you are willing to leave an *unanswered* prompt pending.",
-      default: 600000,
+        "How long a subagent waits for the parent session to answer a forwarded permission request, in milliseconds.\n\nOmit to use the default (`120000`, two minutes). The deadline starts when the child creates the request, including time queued behind another prompt. A child whose parent is not serving requests still fails sooner through the liveness check. Explicit shorter and longer positive-integer overrides are preserved.",
+      default: 120000,
     }),
     promptMaxRows: z.number().int().min(1).optional().meta({
       description:

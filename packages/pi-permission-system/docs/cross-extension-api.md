@@ -320,6 +320,7 @@ Terminal decisions that resolve without an active UI prompt, such as `hook_appro
 Non-UI child sessions also do not emit this event when they create a forwarded permission request; the parent UI session emits it immediately before showing the forwarded permission dialog.
 A forwarded request covered by a serving-session approval is answered without a prompt and emits no event; the event fires only when the parent is actually about to ask the human.
 The matching terminal `permissions:decision` is emitted in the parent session too, so a consumer that reacts to this event has a signal on the same bus telling it the prompt is over.
+A shown forwarded prompt can end with `confirmation_unavailable` when its request deadline expires; this uses the existing event shape and resolution value.
 Forwarded prompts that do reach the human are not degraded: the parent emits the child's original `source` and the same `surface`/`value` display projection, plus a populated `forwarding` context identifying the requesting subagent.
 
 The payload is lean by design — `surface`/`value` are the normalized display projection a notification consumer reads, not a mirror of the internal review log.
@@ -345,15 +346,15 @@ pi.events.on("permissions:ui_prompt", (raw) => {
 
 ### Payload Fields
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `requestId` | `string` | ID of the permission request being prompted |
-| `source` | `PermissionUiPromptSource` | Prompt origin; `skill_input` is retained compatibility and is not emitted directly by the hooks-first runtime |
-| `surface` | `string \| null` | Normalized display surface when known |
-| `value` | `string \| null` | Normalized command, path, skill name, or other display value when known |
-| `agentName` | `string \| null` | Active or requesting agent name when known |
-| `request` | `PromptRequestFacts` | The ask's invariant core, without evidence or annotations |
-| `forwarding` | `ForwardedPromptContext \| null` | Forwarding context, or `null` for a direct prompt |
+| Field        | Type                             | Description                                                                                                   |
+| ------------ | -------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `requestId`  | `string`                         | ID of the permission request being prompted                                                                   |
+| `source`     | `PermissionUiPromptSource`       | Prompt origin; `skill_input` is retained compatibility and is not emitted directly by the hooks-first runtime |
+| `surface`    | `string \| null`                 | Normalized display surface when known                                                                         |
+| `value`      | `string \| null`                 | Normalized command, path, skill name, or other display value when known                                       |
+| `agentName`  | `string \| null`                 | Active or requesting agent name when known                                                                    |
+| `request`    | `PromptRequestFacts`             | The ask's invariant core, without evidence or annotations                                                     |
+| `forwarding` | `ForwardedPromptContext \| null` | Forwarding context, or `null` for a direct prompt                                                             |
 
 Forwarding is orthogonal to origin: a forwarded subagent prompt keeps its original `source` and is identified by a non-null `forwarding` field, not by a dedicated source value.
 
@@ -405,7 +406,7 @@ A forwarded request the serving session's own policy allows or denies is answere
 A served decision carries a non-null `forwarding` context; the requesting session still emits its own decision when the answer comes back.
 
 The `requestId` is the same id the request's review-log entries carry, and the same one `permissions:ui_prompt` carried if the request reached a prompt — so a prompt and its outcome are joinable, as are two concurrent prompts for the same command.
-A request that reaches a prompt is answered by exactly one terminal event on that prompt's own bus, including when the dialog itself fails.
+A request that reaches a prompt is answered by exactly one terminal event on that prompt's own bus, including when the dialog fails or its forwarded deadline expires.
 It identifies a permission *request*, not a tool call: one tool call runs several gates and so raises several requests, each with its own id.
 Use the review log's `toolCallId` to join back to the Pi transcript.
 
@@ -419,37 +420,37 @@ pi.events.on("permissions:decision", (raw) => {
 
 ### Payload Fields
 
-| Field | Type | Description |
-| --- | --- | --- |
-| `requestId` | `string` | ID of the permission request this decision resolves |
-| `surface` | `string` | Permission surface such as `bash`, `read`, `mcp`, or `skill` |
-| `value` | `string` | Command, tool name, skill name, or path that was evaluated |
-| `result` | `"allow" \| "deny"` | Final outcome |
-| `resolution` | `string` | How the outcome was reached |
-| `origin` | `string \| null` | Provenance such as `pretooluse_hook`, `session`, or `builtin` |
-| `agentName` | `string \| null` | Active agent name when known |
-| `matchedPattern` | `string \| null` | Pattern from the winning rule when applicable |
-| `forwarding` | `ForwardedPromptContext \| null` (optional) | Requesting subagent on a decision served by this session |
+| Field            | Type                                        | Description                                                   |
+| ---------------- | ------------------------------------------- | ------------------------------------------------------------- |
+| `requestId`      | `string`                                    | ID of the permission request this decision resolves           |
+| `surface`        | `string`                                    | Permission surface such as `bash`, `read`, `mcp`, or `skill`  |
+| `value`          | `string`                                    | Command, tool name, skill name, or path that was evaluated    |
+| `result`         | `"allow" \| "deny"`                         | Final outcome                                                 |
+| `resolution`     | `string`                                    | How the outcome was reached                                   |
+| `origin`         | `string \| null`                            | Provenance such as `pretooluse_hook`, `session`, or `builtin` |
+| `agentName`      | `string \| null`                            | Active agent name when known                                  |
+| `matchedPattern` | `string \| null`                            | Pattern from the winning rule when applicable                 |
+| `forwarding`     | `ForwardedPromptContext \| null` (optional) | Requesting subagent on a decision served by this session      |
 
 ### Resolution Values
 
 The published union retains full-policy values for compatibility.
 The hooks-first production composition does not emit the rows marked **retained**.
 
-| Value | Runtime status | Meaning |
-| --- | --- | --- |
-| `policy_allow` | Retained | Full-policy config rule allowed without a prompt |
-| `policy_deny` | Retained | Full-policy config rule denied without a prompt |
-| `session_approved` | Active | Covered by an earlier user-granted session approval |
-| `infrastructure_auto_allowed` | Retained | Full-policy infrastructure read bypass |
-| `user_approved` | Active | User approved once via dialog |
-| `user_approved_for_session` | Active | User approved for the rest of the session |
-| `user_denied` | Active | User denied via dialog |
-| `auto_approved` | Retained | Full-policy yolo approval without a dialog |
-| `confirmation_unavailable` | Active | Confirmation was required but no authority answered |
-| `gate_error` | Active | The hook or fallback gate threw and the call was blocked fail-closed |
-| `hook_approved` | Active | A `PreToolUse` hook approved the tool call |
-| `hook_denied` | Active | A `PreToolUse` hook denied the tool call |
+| Value                         | Runtime status | Meaning                                                                                     |
+| ----------------------------- | -------------- | ------------------------------------------------------------------------------------------- |
+| `policy_allow`                | Retained       | Full-policy config rule allowed without a prompt                                            |
+| `policy_deny`                 | Retained       | Full-policy config rule denied without a prompt                                             |
+| `session_approved`            | Active         | Covered by an earlier user-granted session approval                                         |
+| `infrastructure_auto_allowed` | Retained       | Full-policy infrastructure read bypass                                                      |
+| `user_approved`               | Active         | User approved once via dialog                                                               |
+| `user_approved_for_session`   | Active         | User approved for the rest of the session                                                   |
+| `user_denied`                 | Active         | User denied via dialog                                                                      |
+| `auto_approved`               | Retained       | Full-policy yolo approval without a dialog                                                  |
+| `confirmation_unavailable`    | Active         | Confirmation was required but no authority answered before it became unavailable or expired |
+| `gate_error`                  | Active         | The hook or fallback gate threw and the call was blocked fail-closed                        |
+| `hook_approved`               | Active         | A `PreToolUse` hook approved the tool call                                                  |
+| `hook_denied`                 | Active         | A `PreToolUse` hook denied the tool call                                                    |
 
 ---
 

@@ -4,6 +4,7 @@ import type {
   RequestPermissionOptions,
   UnattributedDecision,
 } from "#src/authority/permission-dialog";
+import { FORWARDED_PERMISSION_TIMEOUT_DECISION } from "#src/authority/permission-forwarding";
 import {
   type PermissionPromptUi,
   type PermissionPromptView,
@@ -12,6 +13,7 @@ import {
 } from "#src/authority/permission-prompt-component";
 import { DEFAULT_RENDER_BUDGET } from "#src/presentation/dialog-renderer";
 import type { PromptPayload } from "#src/presentation/prompt-payload";
+import { makeForwardingDeadline } from "#test/helpers/forwarding-fixtures";
 import { makePromptPayload } from "#test/helpers/prompt-details-fixtures";
 import { makePromptPreferences } from "#test/helpers/prompt-view-fixtures";
 
@@ -203,6 +205,109 @@ describe("presentInlinePermissionPrompt", () => {
       state: "denied",
       confirmationUnavailable: true,
     });
+  });
+
+  it("returns automatic unavailability when a forwarded decision step expires", async () => {
+    const { controller, forwardingDeadline } = makeForwardingDeadline();
+    const { view, captured } = makeFakeView(false);
+    const options: RequestPermissionOptions = { forwardingDeadline };
+    const prompt = requestPermissionDecision(
+      view,
+      "Permission Required",
+      ASK,
+      options,
+    );
+
+    controller.abort();
+    const decision = await prompt;
+    captured.component?.handleInput("y");
+
+    expect(decision).toEqual(FORWARDED_PERMISSION_TIMEOUT_DECISION);
+    await expect(prompt).resolves.toEqual(decision);
+  });
+
+  it("expires the whole forwarded interaction while choosing grant scope", async () => {
+    const { controller, forwardingDeadline } = makeForwardingDeadline();
+    const { view, captured } = makeFakeView(false);
+    const prompt = requestPermissionDecision(view, "Permission Required", ASK, {
+      sessionScope: {
+        subagentLabel: "This subagent only",
+        servingSessionLabel: "The whole session",
+      },
+      forwardingDeadline,
+    });
+    captured.component?.handleInput("s");
+
+    controller.abort();
+    captured.component?.handleInput(ENTER);
+
+    await expect(prompt).resolves.toMatchObject({
+      approved: false,
+      forwardingTimedOut: true,
+      decidedBy: { kind: "unavailable" },
+    });
+  });
+
+  it("expires the whole forwarded interaction while editing a denial reason", async () => {
+    const { controller, forwardingDeadline } = makeForwardingDeadline();
+    const { view, captured } = makeFakeView(false);
+    const prompt = requestPermissionDecision(view, "Permission Required", ASK, {
+      forwardingDeadline,
+    });
+    captured.component?.handleInput("r");
+    captured.component?.handleInput("late reason");
+
+    controller.abort();
+    captured.component?.handleInput(ENTER);
+
+    await expect(prompt).resolves.toMatchObject({
+      approved: false,
+      forwardingTimedOut: true,
+      decidedBy: { kind: "unavailable" },
+    });
+  });
+
+  it("does not open a forwarded component for a pre-aborted deadline", async () => {
+    const { controller, forwardingDeadline } = makeForwardingDeadline();
+    const { view, captured } = makeFakeView(false);
+    controller.abort();
+
+    await expect(
+      requestPermissionDecision(view, "Permission Required", ASK, {
+        forwardingDeadline,
+      }),
+    ).resolves.toMatchObject({
+      forwardingTimedOut: true,
+      decidedBy: { kind: "unavailable" },
+    });
+    expect(captured.component).toBeUndefined();
+  });
+
+  it("leaves a direct prompt active beyond the forwarded default", async () => {
+    vi.useFakeTimers();
+    try {
+      const { view, captured } = makeFakeView(false);
+      const prompt = requestPermissionDecision(
+        view,
+        "Permission Required",
+        ASK,
+      );
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      const stillPending = Symbol("still pending");
+      expect(await Promise.race([prompt, Promise.resolve(stillPending)])).toBe(
+        stillPending,
+      );
+
+      captured.component?.handleInput("y");
+      await expect(prompt).resolves.toEqual({
+        approved: true,
+        state: "approved",
+        decidedBy: { kind: "user", via: "dialog" },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   describe("double-press to confirm (enabled)", () => {
@@ -456,11 +561,36 @@ describe("presentInlinePermissionPrompt", () => {
       expect(select).toHaveBeenCalledWith(
         "Title\ntool : read\npath : /repo/secret.txt",
         expect.any(Array),
+        undefined,
       );
       expect(decision).toEqual({
         approved: true,
         state: "approved",
         decidedBy: { kind: "user", via: "select" },
+      });
+    });
+
+    it("does not attribute a late fallback approval to a human after expiry", async () => {
+      const { controller, forwardingDeadline } = makeForwardingDeadline();
+      const selected = Promise.withResolvers<string | undefined>();
+      const select = vi.fn().mockReturnValue(selected.promise);
+      const view = makeView("rpc", true, {
+        select,
+        input: vi.fn(),
+        custom: vi.fn(),
+      });
+      const prompt = requestPermissionDecision(view, "Title", ASK, {
+        forwardingDeadline,
+      });
+      await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
+
+      controller.abort();
+      selected.resolve("Yes");
+
+      await expect(prompt).resolves.toMatchObject({
+        approved: false,
+        forwardingTimedOut: true,
+        decidedBy: { kind: "unavailable" },
       });
     });
 

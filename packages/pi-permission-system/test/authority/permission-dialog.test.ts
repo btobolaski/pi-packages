@@ -6,6 +6,7 @@ import {
   type PermissionDecisionUi,
   requestPermissionDecisionFromUi,
 } from "#src/authority/permission-dialog";
+import { makeForwardingDeadline } from "#test/helpers/forwarding-fixtures";
 
 describe("isPermissionDecisionState", () => {
   it("accepts approved", () => {
@@ -263,6 +264,109 @@ describe("requestPermissionDecisionFromUi", () => {
       );
       expect(selectFn).toHaveBeenCalledTimes(1);
       expect(result).toEqual({ approved: true, state: "approved" });
+    });
+  });
+
+  describe("forwarding deadline", () => {
+    it("does not open a dialog for a pre-aborted deadline", async () => {
+      const { controller, forwardingDeadline } = makeForwardingDeadline();
+      const ui: PermissionDecisionUi = {
+        select: vi.fn(),
+        input: vi.fn(),
+      };
+      controller.abort();
+
+      await expect(
+        requestPermissionDecisionFromUi(ui, "Title", "Message", {
+          forwardingDeadline,
+        }),
+      ).rejects.toMatchObject({
+        name: "ForwardedPermissionDeadlineExpiredError",
+      });
+      expect(ui.select).not.toHaveBeenCalled();
+    });
+
+    it("does not turn an aborted scope chooser into child-only approval", async () => {
+      const { controller, forwardingDeadline } = makeForwardingDeadline();
+      const scope = Promise.withResolvers<string | undefined>();
+      const select = vi
+        .fn()
+        .mockResolvedValueOnce("Yes, for this session")
+        .mockReturnValueOnce(scope.promise);
+      const ui: PermissionDecisionUi = { select, input: vi.fn() };
+      const result = requestPermissionDecisionFromUi(ui, "Title", "Message", {
+        sessionScope: {
+          subagentLabel: "This subagent only",
+          servingSessionLabel: "The whole session",
+        },
+        forwardingDeadline,
+      });
+      const rejection = expect(result).rejects.toMatchObject({
+        name: "ForwardedPermissionDeadlineExpiredError",
+      });
+      await vi.waitFor(() => expect(select).toHaveBeenCalledTimes(2));
+
+      controller.abort();
+      scope.resolve(undefined);
+
+      await rejection;
+    });
+
+    it("checks the deadline after denial-reason input", async () => {
+      const { controller, forwardingDeadline } = makeForwardingDeadline();
+      const reason = Promise.withResolvers<string | undefined>();
+      const input = vi.fn().mockReturnValue(reason.promise);
+      const ui: PermissionDecisionUi = {
+        select: vi.fn().mockResolvedValue("No, provide reason"),
+        input,
+      };
+      const result = requestPermissionDecisionFromUi(ui, "Title", "Message", {
+        forwardingDeadline,
+      });
+      const rejection = expect(result).rejects.toMatchObject({
+        name: "ForwardedPermissionDeadlineExpiredError",
+      });
+      await vi.waitFor(() => expect(input).toHaveBeenCalledOnce());
+
+      controller.abort();
+      reason.resolve("late reason");
+
+      await rejection;
+    });
+
+    it("passes the same signal and decreasing remaining time to each step", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(1000);
+        const { controller, forwardingDeadline } = makeForwardingDeadline(2000);
+        const select = vi
+          .fn()
+          .mockImplementationOnce(() => {
+            vi.setSystemTime(1300);
+            return Promise.resolve("Yes, for this session");
+          })
+          .mockResolvedValueOnce("This subagent only");
+        const ui: PermissionDecisionUi = { select, input: vi.fn() };
+
+        await requestPermissionDecisionFromUi(ui, "Title", "Message", {
+          sessionScope: {
+            subagentLabel: "This subagent only",
+            servingSessionLabel: "The whole session",
+          },
+          forwardingDeadline,
+        });
+
+        expect(select.mock.calls[0]?.[2]).toEqual({
+          signal: controller.signal,
+          timeout: 1000,
+        });
+        expect(select.mock.calls[1]?.[2]).toEqual({
+          signal: controller.signal,
+          timeout: 700,
+        });
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

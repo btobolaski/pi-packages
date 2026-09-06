@@ -19,7 +19,7 @@ An in-process child shares its parent's loaded extension, so the two can never s
 
 A serving node on this version accepts an older child's `message`-only request: the field is no longer required, and the ask is rendered from the `surface`, `value`, and requester provenance the request does carry.
 The reverse does not hold.
-An **older** parent still demands `message` and rejects a newer child's request outright, deleting the file; the child then waits out its forwarding timeout (ten minutes by default) and reports the block as `confirmationUnavailable` rather than as a user denial.
+An **older** parent still demands `message` and rejects a newer child's request outright, deleting the file; the child then waits out its forwarding timeout (two minutes by default) and reports the block as `confirmationUnavailable` rather than as a user denial.
 
 So: upgrade the session that serves prompts before the sessions that forward to it.
 Carrying both fields indefinitely was declined deliberately — it would keep the child's un-budgeted prose alive on the wire, which is the defect this change exists to remove.

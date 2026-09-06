@@ -3,7 +3,10 @@ export class InteractivePromptCancelledError extends Error {
 }
 
 export interface InteractivePromptQueue {
-  run<T>(interaction: (signal: AbortSignal) => Promise<T>): Promise<T>;
+  run<T>(
+    interaction: (signal: AbortSignal) => Promise<T>,
+    requestSignal?: AbortSignal,
+  ): Promise<T>;
 }
 
 export interface InteractivePromptQueueLifecycle {
@@ -20,8 +23,14 @@ export class SerialInteractivePromptQueue
   private tail: Promise<void> = Promise.resolve();
   private controller = new AbortController();
 
-  run<T>(interaction: (signal: AbortSignal) => Promise<T>): Promise<T> {
-    const signal = this.controller.signal;
+  run<T>(
+    interaction: (signal: AbortSignal) => Promise<T>,
+    requestSignal?: AbortSignal,
+  ): Promise<T> {
+    const generationSignal = this.controller.signal;
+    const signal = requestSignal
+      ? AbortSignal.any([generationSignal, requestSignal])
+      : generationSignal;
     const scheduled = this.tail.then(() => {
       if (signal.aborted) {
         throw cancellationError(signal);
@@ -29,7 +38,10 @@ export class SerialInteractivePromptQueue
       return interaction(signal);
     });
     const result = rejectWhenAborted(scheduled, signal);
-    this.tail = result.then(
+    // Ordering follows the underlying transaction, not the caller's
+    // cancellation race. A cancelled middle entry therefore cannot bypass an
+    // unfinished predecessor or overlap the next prompt with active cleanup.
+    this.tail = scheduled.then(
       () => undefined,
       () => undefined,
     );

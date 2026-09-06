@@ -16,6 +16,10 @@ import {
   type UnattributedDecision,
 } from "#src/authority/permission-dialog";
 import {
+  FORWARDED_PERMISSION_TIMEOUT_DECISION,
+  isForwardingDeadlineExpired,
+} from "#src/authority/permission-forwarding";
+import {
   initialPromptState,
   type PromptEvent,
   type PromptKey,
@@ -75,8 +79,10 @@ export interface PromptPreferences {
  *
  * It is therefore also the one place that knows which surface the human
  * answered on, so it is where the decision is attributed to that surface
- * (#726). Having the dialog model and the fallback each name themselves would
- * be two sites that must agree with this branch.
+ * (#726). A deadline expiry is the narrow exception: no human answered, so it
+ * retains automatic-unavailability provenance. Having the dialog model and
+ * the fallback each name themselves would be two sites that must agree with
+ * this branch.
  */
 export async function requestPermissionDecision(
   view: PermissionPromptView,
@@ -84,28 +90,48 @@ export async function requestPermissionDecision(
   payload: PromptPayload,
   options?: RequestPermissionOptions,
 ): Promise<PermissionPromptDecision> {
-  if (view.mode === "tui") {
-    return attributeToHuman(
-      await presentInlinePermissionPrompt(view, title, payload, options),
-      "dialog",
-    );
+  const deadline = options?.forwardingDeadline;
+  if (isForwardingDeadlineExpired(deadline)) {
+    return FORWARDED_PERMISSION_TIMEOUT_DECISION;
   }
-  // The fallback renders once and cannot re-render, so it neither paints nor
-  // offers an expansion; it substitutes a nominal width for the terminal size
-  // it is never told, and the host's own select wraps from there.
-  const rendered = renderPromptDialog(payload, {
-    ...view.budget,
-    width: FALLBACK_RENDER_WIDTH,
-  });
-  return attributeToHuman(
-    await requestPermissionDecisionFromUi(
-      view.ui,
-      title,
-      rendered.lines.join("\n"),
-      options,
-    ),
-    "select",
-  );
+
+  try {
+    let decision: UnattributedDecision;
+    let via: UserDecisionSurface;
+    if (view.mode === "tui") {
+      decision = await presentInlinePermissionPrompt(
+        deadline ? { ...view, signal: deadline.signal } : view,
+        title,
+        payload,
+        options,
+      );
+      via = "dialog";
+    } else {
+      // The fallback renders once and cannot re-render, so it neither paints nor
+      // offers an expansion; it substitutes a nominal width for the terminal size
+      // it is never told, and the host's own select wraps from there.
+      const rendered = renderPromptDialog(payload, {
+        ...view.budget,
+        width: FALLBACK_RENDER_WIDTH,
+      });
+      decision = await requestPermissionDecisionFromUi(
+        view.ui,
+        title,
+        rendered.lines.join("\n"),
+        options,
+      );
+      via = "select";
+    }
+
+    return isForwardingDeadlineExpired(deadline)
+      ? FORWARDED_PERMISSION_TIMEOUT_DECISION
+      : attributeToHuman(decision, via);
+  } catch (error) {
+    if (isForwardingDeadlineExpired(deadline)) {
+      return FORWARDED_PERMISSION_TIMEOUT_DECISION;
+    }
+    throw error;
+  }
 }
 
 function attributeToHuman(

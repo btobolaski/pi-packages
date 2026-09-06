@@ -1,8 +1,11 @@
 import type { DecisionSource } from "#src/authority/decision-source";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
-import type {
-  ForwardedAccessFacts,
-  ForwardedSessionApproval,
+import {
+  FORWARDED_PERMISSION_TIMEOUT_DECISION,
+  type ForwardedAccessFacts,
+  type ForwardedSessionApproval,
+  type ForwardingDeadline,
+  isForwardingDeadlineExpired,
 } from "#src/authority/permission-forwarding";
 import type { PromptPayload } from "#src/presentation/prompt-payload";
 import { renderReviewLogFacts } from "#src/presentation/review-log-renderer";
@@ -53,6 +56,8 @@ export interface PromptPermissionDetails {
   value?: string | null;
   /** Present iff this ask was forwarded from a subagent; drives the non-degraded broadcast + "(Subagent)" title. */
   forwarding?: ForwardedAskProvenance;
+  /** Runtime-only cancellation for a forwarded request's absolute deadline. */
+  forwardingDeadline?: ForwardingDeadline;
   /**
    * The session-approval suggestion for this ask. On the child's escalation it
    * rides into the forwarded request; on the serving node it lets the dialog
@@ -120,7 +125,10 @@ export class PermissionPrompter implements PermissionPrompterApi {
   ): Promise<PermissionPromptDecision> {
     this.writeReviewEntry("permission_request.waiting", details);
 
-    const decision = await authorizer.authorize(details);
+    const authorizerDecision = await authorizer.authorize(details);
+    const decision = isForwardingDeadlineExpired(details.forwardingDeadline)
+      ? FORWARDED_PERMISSION_TIMEOUT_DECISION
+      : authorizerDecision;
 
     this.writeReviewEntry(
       decision.approved

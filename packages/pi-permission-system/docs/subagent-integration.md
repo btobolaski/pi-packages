@@ -28,8 +28,9 @@ When the user approves a forwarded request for the session, the dialog offers tw
 ## Permission Forwarding
 
 A non-UI child writes a structured request below the serving session's permission-forwarding directory and polls for a response.
-The request carries the child's `PromptPayload`, display projection, approval suggestion, and permission request ID.
-The parent renders those child-fixed facts under its own prompt budget and returns the decision through the response file.
+The request carries the child's `PromptPayload`, display projection, approval suggestion, permission request ID, creation time, and absolute deadline.
+The deadline starts when the child creates the request, so inbox and permission-prompt queue time count toward the same budget.
+The parent renders those child-fixed facts under its own prompt budget and returns a timely decision through the response file.
 
 The same request ID appears in the child and parent review records and in `permissions:ui_prompt` and `permissions:decision` broadcasts.
 The child records the responding session and its nested decision provenance, distinguishing a human answer from a serving-session approval.
@@ -49,10 +50,17 @@ A missing, stale, dead-process, or wrong-session heartbeat causes the child to f
 A live parent keeps refreshing while the user considers a prompt, so deliberation is not mistaken for abandonment.
 
 Every abandonment path is reported as `confirmation_unavailable`, not as a user denial, because no user ruled on the request.
-The denial reason identifies whether the target was unresolved, the request could not be written, the response could not be read, the target was not serving, or the timeout expired.
+The denial reason identifies whether the target was unresolved, the request could not be written, the response could not be read, or the target was not serving; deadline expiry uses the fixed `Auto-approval could not approve this tool use` message described below.
 
-After upgrading the package, restart the serving parent before launching newer out-of-process children.
-An older running parent publishes no heartbeat, which a newer child correctly treats as not serving.
+The default unanswered-request deadline is two minutes (`120000` ms), and an explicit positive `forwardingTimeoutMs` may be shorter or longer.
+Expiration closes an active TUI prompt, ends backend waiting for a non-TUI prompt, prevents queued prompts from opening, and blocks with exactly `Auto-approval could not approve this tool use`.
+A late answer cannot create a grant or response.
+A third-party RPC frontend that ignores the SDK timeout may keep stale visuals even though the backend has rejected its answer.
+This permission deadline is independent of a subagent watchdog or run timeout; those supervise the child run rather than one forwarded permission request.
+
+Full cancellation and late-grant protection require updated child and parent processes.
+A new parent serves an old request without a shared parent-side deadline, while a new child still stops waiting when an old parent ignores its deadline field.
+After upgrading the package, restart the serving parent before launching new children.
 
 ## Other Subagent Extensions
 

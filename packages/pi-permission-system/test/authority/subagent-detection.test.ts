@@ -1,9 +1,12 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { SubagentDetectionContext } from "#src/authority/subagent-context";
 import { SubagentDetection } from "#src/authority/subagent-detection";
 import { SubagentSessionRegistry } from "#src/authority/subagent-registry";
 import { posixPathFlavor } from "#src/path/path-flavor";
+import { stubNoSubagentEnvironment } from "#test/helpers/forwarding-fixtures";
+
+beforeEach(stubNoSubagentEnvironment);
 
 afterEach(() => {
   vi.unstubAllEnvs();

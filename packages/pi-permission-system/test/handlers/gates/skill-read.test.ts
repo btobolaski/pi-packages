@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { describeSkillReadGate } from "#src/handlers/gates/skill-read";
-import type { ToolCallContext } from "#src/handlers/gates/types";
+import {
+  type ToolCallContext,
+  UNINTERRUPTED_REQUEST,
+} from "#src/handlers/gates/types";
 import { posixPathFlavor } from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 import type { SkillPromptEntry } from "#src/skill-prompt-sanitizer";
@@ -38,6 +41,7 @@ function makeTcc(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
     input: { path: "/skills/librarian/SKILL.md" },
     toolCallId: "tc-1",
     cwd: "/test/project",
+    lifetime: UNINTERRUPTED_REQUEST,
     ...overrides,
   };
 }

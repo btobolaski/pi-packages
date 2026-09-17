@@ -1,5 +1,6 @@
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -10,6 +11,10 @@ import {
 } from "node:fs";
 
 import { asDecisionSource } from "#src/authority/decision-source";
+import {
+  INTERACTIVE_DELEGATION_CAPABILITY,
+  isDelegationId,
+} from "#src/authority/permission-delegation";
 import { isPermissionDecisionState } from "#src/authority/permission-dialog";
 import {
   createPermissionForwardingLocation,
@@ -367,6 +372,31 @@ export function safeDeleteFile(
   }
 }
 
+export function writeJsonFileAtomicIfAbsent(
+  logger: DebugReviewLogger | null,
+  filePath: string,
+  value: unknown,
+): boolean {
+  const tempPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    writeFileSync(tempPath, JSON.stringify(value), {
+      encoding: "utf-8",
+      mode: OWNER_ONLY_FILE_MODE,
+    });
+    try {
+      linkSync(tempPath, filePath);
+      return true;
+    } catch (error) {
+      if (isErrnoCode(error, "EEXIST")) {
+        return false;
+      }
+      throw error;
+    }
+  } finally {
+    safeDeleteFile(logger, tempPath, "temporary permission-forwarding");
+  }
+}
+
 export function writeJsonFileAtomic(
   logger: DebugReviewLogger | null,
   filePath: string,
@@ -399,13 +429,18 @@ export function readForwardedPermissionRequest(
       // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- JSON.parse can return null for the string "null"
       !parsed ||
       typeof parsed.id !== "string" ||
+      parsed.id.length === 0 ||
+      parsed.id.includes("/") ||
+      parsed.id.includes("\\") ||
+      parsed.id.includes("\0") ||
       !isEpochMilliseconds(parsed.createdAt) ||
       (parsed.expiresAt !== undefined &&
         (!isEpochMilliseconds(parsed.expiresAt) ||
           parsed.expiresAt <= parsed.createdAt)) ||
       typeof parsed.requesterSessionId !== "string" ||
       typeof parsed.targetSessionId !== "string" ||
-      typeof parsed.requesterAgentName !== "string"
+      typeof parsed.requesterAgentName !== "string" ||
+      (parsed.delegation !== undefined && !isConsistentDelegatedRequest(parsed))
     ) {
       logPermissionForwardingWarning(
         logger,
@@ -421,6 +456,7 @@ export function readForwardedPermissionRequest(
       requesterSessionId: parsed.requesterSessionId,
       targetSessionId: parsed.targetSessionId,
       requesterAgentName: parsed.requesterAgentName,
+      delegation: asDelegatedTransaction(parsed.delegation) ?? undefined,
       // Tolerant read: the payload and display fields are optional and may be
       // absent (older child) or malformed; reconstruct only the well-formed
       // ones. An older child's `message` is deliberately not salvaged — a
@@ -440,6 +476,51 @@ export function readForwardedPermissionRequest(
     );
     return null;
   }
+}
+
+function asDelegatedTransaction(
+  value: unknown,
+): ForwardedPermissionRequest["delegation"] | null {
+  if (typeof value !== "object" || value === null) return null;
+  const candidate = value as Partial<
+    NonNullable<ForwardedPermissionRequest["delegation"]>
+  >;
+  const identity = candidate.identity;
+  return candidate.capability === INTERACTIVE_DELEGATION_CAPABILITY &&
+    typeof candidate.requestId === "string" &&
+    /^[A-Za-z0-9._-]+$/.test(candidate.requestId) &&
+    isDelegationId(candidate.delegationId) &&
+    isEpochMilliseconds(candidate.expiresAt) &&
+    typeof identity === "object" &&
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- JSON can contain null despite the structural assertion above.
+    identity !== null &&
+    typeof identity.parentSessionId === "string" &&
+    typeof identity.childSessionId === "string" &&
+    typeof identity.agentName === "string" &&
+    typeof identity.childCwd === "string"
+    ? (candidate as NonNullable<ForwardedPermissionRequest["delegation"]>)
+    : null;
+}
+
+function isConsistentDelegatedRequest(
+  request: Partial<ForwardedPermissionRequest>,
+): boolean {
+  const delegation = asDelegatedTransaction(request.delegation);
+  const intent = asForwardedAccessIntent(request.accessIntent);
+  if (!delegation || !intent || !asPromptPayload(request.payload)) return false;
+  const identity = delegation.identity;
+  return (
+    delegation.requestId === request.id &&
+    delegation.expiresAt === request.expiresAt &&
+    identity.parentSessionId === request.targetSessionId &&
+    identity.childSessionId === request.requesterSessionId &&
+    identity.agentName === request.requesterAgentName &&
+    identity.childSessionId === intent.principal.sessionId &&
+    identity.agentName === intent.principal.agentName &&
+    identity.childCwd === intent.requesterCwd &&
+    (request.sessionApproval === undefined ||
+      asForwardedSessionApproval(request.sessionApproval) !== undefined)
+  );
 }
 
 export function readForwardedPermissionResponse(

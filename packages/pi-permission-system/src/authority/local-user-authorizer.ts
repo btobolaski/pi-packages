@@ -22,6 +22,10 @@ import {
 } from "#src/permission-events";
 import { buildUiPrompt } from "#src/permission-ui-prompt";
 import type { TerminalAuthorizer } from "./authorizer";
+import {
+  cancelledPermissionDecision,
+  withPermissionSignal,
+} from "./forwarded-transaction";
 import type { PromptPermissionDetails } from "./permission-prompter";
 
 /** Dependencies required by {@link LocalUserAuthorizer}. */
@@ -72,37 +76,42 @@ export class LocalUserAuthorizer implements TerminalAuthorizer {
           assertActive(forwardingDeadline, signal);
           emitUiPromptEvent(this.deps.events, uiPrompt);
           const requestOptions = buildRequestOptions(details);
-          const decision = await this.deps.requestPermissionDecision(
-            {
-              mode: this.deps.mode,
-              ui: this.deps.ui,
-              ...this.deps.getPromptPreferences(),
-              signal,
-            },
-            details.forwarding
-              ? "Permission Required (Subagent)"
-              : "Permission Required",
-            details.payload,
-            forwardingDeadline
-              ? {
-                  ...(requestOptions ?? {}),
-                  forwardingDeadline: {
-                    ...forwardingDeadline,
-                    signal,
-                  },
-                }
-              : requestOptions,
+          const decision = await withPermissionSignal(
+            this.deps.requestPermissionDecision(
+              {
+                mode: this.deps.mode,
+                ui: this.deps.ui,
+                ...this.deps.getPromptPreferences(),
+                signal,
+              },
+              details.forwarding
+                ? "Permission Required (Subagent)"
+                : "Permission Required",
+              details.payload,
+              forwardingDeadline
+                ? {
+                    ...(requestOptions ?? {}),
+                    forwardingDeadline: {
+                      ...forwardingDeadline,
+                      signal,
+                    },
+                  }
+                : requestOptions,
+            ),
+            signal,
           );
           assertActive(forwardingDeadline, signal);
           return decision;
         } finally {
           await this.deps.setPromptIndicator(false);
         }
-      }, forwardingDeadline?.signal);
+      }, details.requestSignal ?? forwardingDeadline?.signal);
     } catch (error) {
       if (isForwardingDeadlineExpired(forwardingDeadline)) {
         return FORWARDED_PERMISSION_TIMEOUT_DECISION;
       }
+      if (details.requestSignal?.aborted)
+        return cancelledPermissionDecision(forwardingDeadline);
       throw error;
     }
   }

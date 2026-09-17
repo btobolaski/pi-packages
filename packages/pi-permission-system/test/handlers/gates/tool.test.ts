@@ -3,7 +3,10 @@ import { describe, expect, it } from "vitest";
 import type { ShellInvocation } from "#src/access-intent/tool-kind";
 import type { ToolPathAccess } from "#src/handlers/gates/tool";
 import { describeToolGate } from "#src/handlers/gates/tool";
-import type { ToolCallContext } from "#src/handlers/gates/types";
+import {
+  type ToolCallContext,
+  UNINTERRUPTED_REQUEST,
+} from "#src/handlers/gates/types";
 import { posixPathFlavor, win32PathFlavor } from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 import {
@@ -29,6 +32,7 @@ function makeTcc(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
     input: {},
     toolCallId: "tc-1",
     cwd: "/test/project",
+    lifetime: UNINTERRUPTED_REQUEST,
     ...overrides,
   };
 }

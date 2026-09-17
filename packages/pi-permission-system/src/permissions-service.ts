@@ -2,6 +2,13 @@ import type { AccessIntent } from "./access-intent/access-intent";
 import { buildAccessIntentForSurface } from "./access-intent/input-normalizer";
 import type { Authorizer } from "./authority/authorizer";
 import type { AuthorizerRegistrar } from "./authority/authorizer-registry";
+import type {
+  DelegationIdentity,
+  DelegationReady,
+  DelegationState,
+  PendingDelegatedWait,
+  PermissionDelegation,
+} from "./authority/permission-delegation";
 import { resolveBashAdvisoryCheck } from "./bash-advisory-check";
 import type { PathNormalizer } from "./path-normalizer";
 import type { PermissionsService } from "./service";
@@ -25,9 +32,10 @@ interface ResolverForService {
   getToolPermission(toolName: string, agentName?: string): PermissionState;
 }
 
-/** Narrow session view: hands out the cwd-bound path normalizer. */
-interface PathNormalizerProvider {
+/** Session operations needed for advisory queries and stale-service teardown. */
+interface SessionForService {
   getPathNormalizer(): PathNormalizer;
+  deactivate(): void;
 }
 
 /**
@@ -43,10 +51,11 @@ interface PathNormalizerProvider {
 export class LocalPermissionsService implements PermissionsService {
   constructor(
     private readonly resolver: ResolverForService,
-    private readonly session: PathNormalizerProvider,
+    private readonly session: SessionForService,
     private readonly formatterRegistry: ToolInputFormatterRegistrar,
     private readonly accessExtractorRegistry: ToolAccessExtractorRegistrar,
     private readonly authorizerRegistry: AuthorizerRegistrar,
+    private readonly delegation: PermissionDelegation,
   ) {}
 
   checkPermission(
@@ -96,5 +105,28 @@ export class LocalPermissionsService implements PermissionsService {
     authorize: Authorizer["authorize"],
   ): ReturnType<PermissionsService["registerAuthorizer"]> {
     return this.authorizerRegistry.register(name, authorize);
+  }
+
+  connectDelegation(
+    identity: DelegationIdentity,
+    options?: { signal?: AbortSignal },
+  ): Promise<DelegationReady> {
+    return this.delegation.connect(identity, options);
+  }
+
+  getDelegationState(): DelegationState {
+    return this.delegation.getState();
+  }
+
+  subscribeDelegatedWaits(
+    listener: (pending: readonly PendingDelegatedWait[]) => void,
+  ): () => void {
+    return this.delegation.subscribeWaits(listener);
+  }
+
+  /** End a stale instance's pending delegation before service unpublication. */
+  closeDelegation(): void {
+    this.delegation.close();
+    this.session.deactivate();
   }
 }

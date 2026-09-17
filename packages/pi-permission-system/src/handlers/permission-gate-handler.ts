@@ -37,7 +37,22 @@ export class PermissionGateHandler {
     event: unknown,
     ctx: ExtensionContext,
   ): Promise<GateOutcome> {
+    const originalSignal = ctx.signal;
     this.session.activate(ctx);
+    if (!this.session.isPermissionReady())
+      return { action: "block", reason: "Delegated permissions are not ready" };
+    const signal = this.session.capturePermissionSignal(originalSignal);
+    const lifetime = {
+      signal,
+      isActive: () => !signal.aborted && this.session.isPermissionReady(),
+    };
+    const cancelled = (): GateOutcome => ({
+      action: "block",
+      reason: this.session.isPermissionReady()
+        ? "Permission request cancelled"
+        : "Delegated permissions are no longer ready",
+    });
+    if (!lifetime.isActive()) return cancelled();
 
     const validation = validateRequestedTool(event, this.toolRegistry.getAll());
     if (validation.status === "block") {
@@ -59,13 +74,16 @@ export class PermissionGateHandler {
       input,
       toolCallId,
       cwd: ctx.cwd,
+      lifetime,
     };
 
     const hookOutcome = await this.preToolUseHooks.evaluate(tcc, ctx);
+    if (!lifetime.isActive()) return cancelled();
     if (hookOutcome.action !== "continue") {
       return hookOutcome;
     }
-    return await this.pipeline.evaluate(tcc, this.runner);
+    const result = await this.pipeline.evaluate(tcc, this.runner);
+    return lifetime.isActive() ? result : cancelled();
   }
 }
 
@@ -114,6 +132,7 @@ export function validateRequestedTool(
  * Extract the tool input from an event, checking both `input` and `arguments`
  * fields (different Pi SDK versions use different names).
  */
+// pi-lens-ignore: no-unknown-returns -- arbitrary plugin input is validated by its tool-specific gate.
 export function getEventInput(event: unknown): unknown {
   const record = toRecord(event);
 

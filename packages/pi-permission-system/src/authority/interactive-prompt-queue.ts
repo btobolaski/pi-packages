@@ -10,6 +10,7 @@ export interface InteractivePromptQueue {
 }
 
 export interface InteractivePromptQueueLifecycle {
+  bind(sessionId: string): void;
   invalidate(reason: string): void;
 }
 
@@ -22,6 +23,17 @@ export class SerialInteractivePromptQueue
 {
   private tail: Promise<void> = Promise.resolve();
   private controller = new AbortController();
+  private sessionId: string | undefined;
+  private queues: Map<string, Promise<void>> | undefined;
+
+  /** A replacement instance joins unfinished UI cleanup rather than opening beside it. */
+  bind(sessionId: string): void {
+    const key = Symbol.for("@gotgenes/pi-permission-system:prompt-queues");
+    const global = globalThis as Record<symbol, unknown>;
+    global[key] ??= new Map<string, Promise<void>>();
+    this.queues = global[key] as Map<string, Promise<void>>;
+    this.sessionId = sessionId;
+  }
 
   run<T>(
     interaction: (signal: AbortSignal) => Promise<T>,
@@ -31,7 +43,11 @@ export class SerialInteractivePromptQueue
     const signal = requestSignal
       ? AbortSignal.any([generationSignal, requestSignal])
       : generationSignal;
-    const scheduled = this.tail.then(() => {
+    const sessionId = this.sessionId;
+    const queues = this.queues;
+    const predecessor =
+      (sessionId ? queues?.get(sessionId) : undefined) ?? this.tail;
+    const scheduled = predecessor.then(() => {
       if (signal.aborted) {
         throw cancellationError(signal);
       }
@@ -45,13 +61,19 @@ export class SerialInteractivePromptQueue
       () => undefined,
       () => undefined,
     );
+    if (sessionId && queues) {
+      const tail = this.tail;
+      queues.set(sessionId, tail);
+      void tail.then(() => {
+        if (queues.get(sessionId) === tail) queues.delete(sessionId);
+      });
+    }
     return result;
   }
 
   invalidate(reason: string): void {
     this.controller.abort(new InteractivePromptCancelledError(reason));
     this.controller = new AbortController();
-    this.tail = Promise.resolve();
   }
 }
 
@@ -59,15 +81,12 @@ function rejectWhenAborted<T>(
   interaction: Promise<T>,
   signal: AbortSignal,
 ): Promise<T> {
-  if (signal.aborted) {
-    return Promise.reject(cancellationError(signal));
-  }
-
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => {
       reject(cancellationError(signal));
     };
     signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
     interaction.then(
       (value) => {
         signal.removeEventListener("abort", onAbort);

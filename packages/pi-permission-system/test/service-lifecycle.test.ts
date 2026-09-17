@@ -32,6 +32,9 @@ function makeService(): PermissionsService {
     registerToolInputFormatter: vi.fn(),
     registerToolAccessExtractor: vi.fn(),
     registerAuthorizer: vi.fn(),
+    connectDelegation: vi.fn(),
+    subscribeDelegatedWaits: vi.fn().mockReturnValue(() => {}),
+    getDelegationState: vi.fn().mockReturnValue({ status: "not-required" }),
   };
 }
 
@@ -72,20 +75,28 @@ it("PermissionServiceLifecycle satisfies ServiceLifecycle", () => {
 // ── activate ──────────────────────────────────────────────────────────────
 
 describe("activate", () => {
-  it("publishes the service for a non-child session", () => {
+  it("publishes the service as the default for a non-child session", () => {
     const ctx = makeCtx();
     const { lifecycle, service } = makeLifecycle();
     mockIsRegisteredChild.mockReturnValue(false);
     lifecycle.activate(ctx);
-    expect(mockPublishPermissionsService).toHaveBeenCalledWith(service);
+    expect(mockPublishPermissionsService).toHaveBeenCalledWith(
+      service,
+      "session-test",
+      { asDefault: true },
+    );
   });
 
-  it("skips publishing for a registered child session", () => {
+  it("publishes a registered child only under its exact session id", () => {
     const ctx = makeCtx();
-    const { lifecycle } = makeLifecycle();
+    const { lifecycle, service } = makeLifecycle();
     mockIsRegisteredChild.mockReturnValue(true);
     lifecycle.activate(ctx);
-    expect(mockPublishPermissionsService).not.toHaveBeenCalled();
+    expect(mockPublishPermissionsService).toHaveBeenCalledWith(
+      service,
+      "session-test",
+      { asDefault: false },
+    );
   });
 
   it("always emits the ready event, even for a child session", () => {

@@ -4,7 +4,10 @@ import type {
   RequestPermissionOptions,
   UnattributedDecision,
 } from "#src/authority/permission-dialog";
-import { FORWARDED_PERMISSION_TIMEOUT_DECISION } from "#src/authority/permission-forwarding";
+import {
+  FORWARDED_PERMISSION_TIMEOUT_DECISION,
+  ForwardedPermissionDeadlineExpiredError,
+} from "#src/authority/permission-forwarding";
 import {
   type PermissionPromptUi,
   type PermissionPromptView,
@@ -218,7 +221,7 @@ describe("presentInlinePermissionPrompt", () => {
       options,
     );
 
-    controller.abort();
+    controller.abort(new ForwardedPermissionDeadlineExpiredError());
     const decision = await prompt;
     captured.component?.handleInput("y");
 
@@ -238,7 +241,7 @@ describe("presentInlinePermissionPrompt", () => {
     });
     captured.component?.handleInput("s");
 
-    controller.abort();
+    controller.abort(new ForwardedPermissionDeadlineExpiredError());
     captured.component?.handleInput(ENTER);
 
     await expect(prompt).resolves.toMatchObject({
@@ -257,7 +260,7 @@ describe("presentInlinePermissionPrompt", () => {
     captured.component?.handleInput("r");
     captured.component?.handleInput("late reason");
 
-    controller.abort();
+    controller.abort(new ForwardedPermissionDeadlineExpiredError());
     captured.component?.handleInput(ENTER);
 
     await expect(prompt).resolves.toMatchObject({
@@ -270,7 +273,7 @@ describe("presentInlinePermissionPrompt", () => {
   it("does not open a forwarded component for a pre-aborted deadline", async () => {
     const { controller, forwardingDeadline } = makeForwardingDeadline();
     const { view, captured } = makeFakeView(false);
-    controller.abort();
+    controller.abort(new ForwardedPermissionDeadlineExpiredError());
 
     await expect(
       requestPermissionDecision(view, "Permission Required", ASK, {
@@ -584,7 +587,7 @@ describe("presentInlinePermissionPrompt", () => {
       });
       await vi.waitFor(() => expect(select).toHaveBeenCalledOnce());
 
-      controller.abort();
+      controller.abort(new ForwardedPermissionDeadlineExpiredError());
       selected.resolve("Yes");
 
       await expect(prompt).resolves.toMatchObject({

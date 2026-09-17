@@ -1,7 +1,9 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { DebugReviewLogger } from "#src/session-logger";
+import type { DelegationControlServer } from "./delegation-control";
 import type { InboxProcessor } from "./forwarded-request-server";
 import { getSessionId } from "./forwarder-context";
+import { isDelegationRequired } from "./permission-delegation";
 import { PERMISSION_FORWARDING_POLL_INTERVAL_MS } from "./permission-forwarding";
 import type { ServingAnnouncer } from "./serving-registry";
 import type { SubagentDetector } from "./subagent-detection";
@@ -23,6 +25,9 @@ export interface ForwardingManagerDeps {
   forwarder: InboxProcessor;
   /** Publishes that this session is draining its inbox, for forwarding children. */
   serving: ServingAnnouncer;
+  /** Control work is independent of the serial human request drain. */
+  control?: Pick<DelegationControlServer, "process" | "revokeAll">;
+  delegationRequired?: boolean;
   logger: DebugReviewLogger;
 }
 
@@ -43,10 +48,14 @@ export interface ForwardingManagerDeps {
 export class ForwardingManager {
   private timer: NodeJS.Timeout | null = null;
   private context: ExtensionContext | null = null;
-  private processing = false;
+  private processing: object | null = null;
+  private lifetime = new AbortController();
   private servingSessionId: string | null = null;
+  private readonly delegationRequired: boolean;
 
-  constructor(private readonly deps: ForwardingManagerDeps) {}
+  constructor(private readonly deps: ForwardingManagerDeps) {
+    this.delegationRequired = deps.delegationRequired ?? isDelegationRequired();
+  }
 
   /**
    * Start polling if `ctx` has UI and is not a subagent execution context.
@@ -55,10 +64,20 @@ export class ForwardingManager {
    * Stops any existing poll when the context does not qualify for forwarding.
    */
   start(ctx: ExtensionContext): void {
-    if (!ctx.hasUI || this.deps.detection.isSubagent(ctx)) {
+    if (
+      !ctx.hasUI ||
+      this.deps.detection.isSubagent(ctx) ||
+      this.delegationRequired
+    ) {
       this.stop();
       return;
     }
+    if (
+      this.servingSessionId !== null &&
+      this.servingSessionId !== getSessionId(ctx)
+    )
+      this.stop();
+    if (this.lifetime.signal.aborted) this.lifetime = new AbortController();
     this.context = ctx;
     this.announceServing(getSessionId(ctx));
     if (this.timer) {
@@ -71,13 +90,29 @@ export class ForwardingManager {
       // announcement decay exactly when it is most demonstrably alive, and
       // every other forwarding child would give up on it.
       this.refreshServing();
+      try {
+        if (this.context) this.deps.control?.process(this.context);
+        this.deps.forwarder.checkPending();
+      } catch (error) {
+        this.deps.logger.review("forwarded_permission.control_error", {
+          error: String(error),
+        });
+      }
       if (!this.context || this.processing) {
         return;
       }
-      this.processing = true;
-      void this.deps.forwarder.processInbox(this.context).finally(() => {
-        this.processing = false;
-      });
+      const drain = {};
+      this.processing = drain;
+      void this.deps.forwarder
+        .processInbox(this.context, this.lifetime.signal)
+        .catch((error: unknown) =>
+          this.deps.logger.review("forwarded_permission.drain_error", {
+            error: String(error),
+          }),
+        )
+        .finally(() => {
+          if (this.processing === drain) this.processing = null;
+        });
     }, PERMISSION_FORWARDING_POLL_INTERVAL_MS);
   }
 
@@ -87,9 +122,11 @@ export class ForwardingManager {
       clearInterval(this.timer);
       this.timer = null;
     }
+    this.lifetime.abort();
+    this.deps.control?.revokeAll();
     this.withdrawServing();
     this.context = null;
-    this.processing = false;
+    this.processing = null;
   }
 
   // ── Private methods ────────────────────────────────────────────────

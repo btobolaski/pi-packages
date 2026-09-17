@@ -32,6 +32,7 @@ function makeSetup(opts?: { configIssues?: string[] }) {
     );
   }
   const serviceLifecycle: ServiceLifecycle = {
+    prepare: vi.fn<ServiceLifecycle["prepare"]>(),
     activate: vi.fn<ServiceLifecycle["activate"]>(),
     teardown: vi.fn<ServiceLifecycle["teardown"]>(),
   };

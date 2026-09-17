@@ -19,13 +19,23 @@ import { vi } from "vitest";
 
 import type { ParentAuthorizerDeps } from "#src/authority/approval-escalator";
 import type { AskEscalator } from "#src/authority/authorizer-selection";
-import type { ForwardedRequestServerDeps } from "#src/authority/forwarded-request-server";
+import { DelegationControlServer } from "#src/authority/delegation-control";
+import {
+  ForwardedRequestServer,
+  type ForwardedRequestServerDeps,
+} from "#src/authority/forwarded-request-server";
+import {
+  type DelegatedRequest,
+  delegatedTerminalPath,
+} from "#src/authority/forwarded-transaction";
 import type { ForwarderContext } from "#src/authority/forwarder-context";
+import { readForwardedPermissionRequest } from "#src/authority/forwarding-io";
 import {
   ForwardingLivenessJudge,
   ServingHeartbeatStore,
   type TargetServingLookup,
 } from "#src/authority/forwarding-liveness";
+import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import {
   createPermissionForwardingLocation,
   type ForwardedAccessIntent,
@@ -33,7 +43,10 @@ import {
   type ForwardingDeadline,
   PERMISSION_FORWARDING_TIMEOUT_MS,
   type PermissionForwardingLocation,
+  SUBAGENT_ENV_HINT_KEYS,
+  SUBAGENT_PARENT_SESSION_ENV_CANDIDATES,
 } from "#src/authority/permission-forwarding";
+import type { PromptPermissionDetails } from "#src/authority/permission-prompter";
 import {
   type ServingLookup,
   ServingSessionRegistry,
@@ -42,8 +55,141 @@ import {
   type SubagentSessionInfo,
   SubagentSessionRegistry,
 } from "#src/authority/subagent-registry";
+import { SessionRules } from "#src/session-rules";
+import type {
+  DelegationProcessConfig,
+  startDelegationProcess,
+} from "#test/helpers/delegation-process";
+import { makeDescriptor } from "#test/helpers/gate-fixtures";
 import { makeCheckResult } from "#test/helpers/handler-fixtures";
 import { makePromptPayload } from "#test/helpers/prompt-details-fixtures";
+
+/** Real serving stack and serializable child configuration for cross-process delegation tests. */
+export function makeDelegationProcessParent(temp: ForwardingTempDir) {
+  const { forwardingDir } = temp;
+  const identity = {
+    parentSessionId: "parent-session",
+    childSessionId: "process-child",
+    agentName: "Explore",
+    childCwd: process.cwd(),
+  };
+  const context = makeForwarderContext({
+    hasUI: true,
+    sessionId: identity.parentSessionId,
+  });
+  const logger = { review: vi.fn(), debug: vi.fn() };
+  const heartbeats = new ServingHeartbeatStore({
+    forwardingDir,
+    logger,
+    capabilities: ["interactive-delegation-v1"],
+  });
+  const control = new DelegationControlServer({
+    forwardingDir,
+    logger,
+    canServe: () => true,
+  });
+  heartbeats.markServing(identity.parentSessionId);
+  const refresh = setInterval(
+    () => heartbeats.markServing(identity.parentSessionId),
+    1000,
+  );
+  const human = Promise.withResolvers<PermissionPromptDecision>();
+  const prompted = Promise.withResolvers<PromptPermissionDetails>();
+  const grants = new SessionRules();
+  const server = new ForwardedRequestServer(
+    makeServerDeps({
+      forwardingDir,
+      delegationControl: control,
+      recorder: grants,
+      escalator: {
+        escalate: (details) => {
+          prompted.resolve(details);
+          return human.promise;
+        },
+      },
+    }),
+  );
+  const config: DelegationProcessConfig = {
+    forwardingDir,
+    identity,
+    gate: makeDescriptor({
+      surface: "bash",
+      input: { command: "git status" },
+      payload: makePromptPayload({
+        request: {
+          ...makePromptPayload().request,
+          surface: "bash",
+          toolName: "bash",
+          value: "git status",
+        },
+      }),
+      promptDetails: {
+        source: "tool_call",
+        agentName: identity.agentName,
+        toolName: "bash",
+        command: "git status",
+        accessIntent: makeForwardedAccessIntent(),
+      },
+      decision: { surface: "bash", value: "git status" },
+    }),
+  };
+  return {
+    identity,
+    context,
+    control,
+    human,
+    grants,
+    config,
+    server,
+    heartbeats,
+    logger,
+    prompt: prompted.promise,
+    async beginRequest({
+      child,
+      receive,
+    }: ReturnType<typeof startDelegationProcess>) {
+      await receive("connecting");
+      control.process(context);
+      const ready = await receive("ready");
+      child.send("request");
+      const published = await receive("request");
+      const requestPath = join(
+        temp.location.requestsDir,
+        `${String(published.requestId)}.json`,
+      );
+      const request = readForwardedPermissionRequest(
+        logger,
+        requestPath,
+      ) as DelegatedRequest;
+      const terminal = delegatedTerminalPath(forwardingDir, request);
+      const processing = server.processInbox(context);
+      return {
+        ready,
+        published,
+        requestPath,
+        request,
+        terminal,
+        processing,
+        prompt: prompted.promise,
+      };
+    },
+    stopServing() {
+      clearInterval(refresh);
+      heartbeats.clearServing(identity.parentSessionId);
+    },
+  };
+}
+
+/** Establishes the default non-subagent environment; restore stubs after each test. */
+export function stubNoSubagentEnvironment(): void {
+  for (const key of [
+    ...SUBAGENT_ENV_HINT_KEYS,
+    ...SUBAGENT_PARENT_SESSION_ENV_CANDIDATES,
+    "PI_PERMISSION_DELEGATION_REQUIRED",
+  ]) {
+    vi.stubEnv(key, undefined);
+  }
+}
 
 /** A fresh request-local deadline and the controller that owns its signal. */
 export function makeForwardingDeadline(expiresAt = Date.now() + 1000): {

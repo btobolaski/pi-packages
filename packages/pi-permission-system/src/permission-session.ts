@@ -5,6 +5,7 @@ import {
   getActiveAgentNameFromSystemPrompt,
 } from "./active-agent";
 import type { AuthorizerSelectionLifecycle } from "./authority/authorizer-selection";
+import type { PermissionDelegation } from "./authority/permission-delegation";
 import type { ShellToolsConfig } from "./config-schema";
 import type { SessionConfigStore } from "./config-store";
 import type { PermissionSystemExtensionConfig } from "./extension-config";
@@ -40,6 +41,8 @@ export class PermissionSession implements ToolCallGateInputs {
   private skillEntries: SkillPromptEntry[] = [];
   private knownAgentName: string | null = null;
   private pathNormalizer: PathNormalizer;
+  private sessionId: string | null = null;
+  private lifetime = new AbortController();
 
   constructor(
     private readonly paths: ExtensionPaths,
@@ -49,6 +52,7 @@ export class PermissionSession implements ToolCallGateInputs {
     private readonly configStore: SessionConfigStore,
     private readonly authorizerSelection: AuthorizerSelectionLifecycle,
     private readonly flavor: PathFlavor,
+    private readonly delegation?: PermissionDelegation,
   ) {
     // Placeholder until the first activate(ctx) binds the real cwd; every gate
     // evaluate runs after activate (handleToolCall activates first), so this
@@ -68,14 +72,21 @@ export class PermissionSession implements ToolCallGateInputs {
    * fail-open gap if a tool call ever arrives before `session_start`.
    */
   activate(ctx: ExtensionContext): void {
+    const sessionId = ctx.sessionManager.getSessionId();
+    if (this.sessionId !== null && this.sessionId !== sessionId)
+      this.deactivate();
+    this.sessionId = sessionId;
     this.context = ctx;
     this.pathNormalizer = new PathNormalizer(this.flavor, ctx.cwd);
-    this.forwarding.start(ctx);
     this.authorizerSelection.activate(ctx);
+    this.forwarding.start(ctx);
   }
 
   /** Clear the context, stop forwarding, and deactivate the authorizer selection. */
   deactivate(): void {
+    this.lifetime.abort();
+    this.lifetime = new AbortController();
+    this.delegation?.close();
     this.context = null;
     this.forwarding.stop();
     this.authorizerSelection.deactivate();
@@ -84,6 +95,22 @@ export class PermissionSession implements ToolCallGateInputs {
   /** Return the current runtime context, or null if not activated. */
   getRuntimeContext(): ExtensionContext | null {
     return this.context;
+  }
+
+  isPermissionReady(): boolean {
+    const state = this.delegation?.getState();
+    return (
+      !state || state.status === "not-required" || state.status === "ready"
+    );
+  }
+
+  capturePermissionSignal(signal?: AbortSignal): AbortSignal {
+    const binding = this.delegation?.getBinding();
+    return AbortSignal.any([
+      this.lifetime.signal,
+      ...(signal ? [signal] : []),
+      ...(binding ? [binding.signal] : []),
+    ]);
   }
 
   // ── UI notifications ────────────────────────────────────────────────────
@@ -105,7 +132,8 @@ export class PermissionSession implements ToolCallGateInputs {
    * entries, and activates the new context.
    */
   resetForNewSession(ctx: ExtensionContext, projectTrusted: boolean): void {
-    this.authorizerSelection.deactivate();
+    if (this.context) this.deactivate();
+    else this.authorizerSelection.deactivate();
     this.permissionManager.configureForCwd(
       projectTrusted ? ctx.cwd : undefined,
     );
@@ -158,6 +186,11 @@ export class PermissionSession implements ToolCallGateInputs {
     ctx: ExtensionContext,
     systemPrompt?: string,
   ): string | null {
+    const binding = this.delegation?.getBinding();
+    if (binding) {
+      this.knownAgentName = binding.identity.agentName;
+      return binding.identity.agentName;
+    }
     const fromSession = getActiveAgentName(ctx);
     if (fromSession) {
       this.knownAgentName = fromSession;

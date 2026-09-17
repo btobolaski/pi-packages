@@ -28,8 +28,13 @@ for sym in getPermissionsService publishPermissionsService unpublishPermissionsS
   PermissionsService PermissionCheckResult PermissionState ToolInputFormatter \
   PERMISSIONS_UI_PROMPT_CHANNEL PERMISSIONS_READY_CHANNEL PERMISSIONS_DECISION_CHANNEL \
   PermissionUiPromptEvent registerAuthorizer PermissionQuery Authorizer \
-  AuthorizerVerdict PromptPermissionDetails PromptPayload PromptRequestFacts; do
-  grep -q "$sym" "$DTS" || { echo "FAIL: '$sym' missing from dist/public.d.ts" >&2; exit 1; }
+  AuthorizerVerdict PromptPermissionDetails PromptPayload PromptRequestFacts \
+  DelegationIdentity DelegationReady DelegationState PendingDelegatedWait \
+  connectDelegation getDelegationState subscribeDelegatedWaits; do
+  grep -q "$sym" "$DTS" || {
+    echo "FAIL: '$sym' missing from dist/public.d.ts" >&2
+    exit 1
+  }
 done
 echo "OK: dist/public.d.ts is self-contained and exports the public surface"
 
@@ -37,11 +42,11 @@ echo "OK: dist/public.d.ts is self-contained and exports the public surface"
 CONSUMER="$WORK/consumer"
 mkdir -p "$CONSUMER"
 
-cat > "$CONSUMER/package.json" <<'JSON'
+cat >"$CONSUMER/package.json" <<'JSON'
 { "name": "consumer", "version": "0.0.0", "private": true, "type": "module" }
 JSON
 
-cat > "$CONSUMER/tsconfig.json" <<'JSON'
+cat >"$CONSUMER/tsconfig.json" <<'JSON'
 {
   "compilerOptions": {
     "target": "ESNext",
@@ -58,12 +63,16 @@ JSON
 
 # Probe reproduces the exact reported import from #592 (PERMISSIONS_UI_PROMPT_CHANNEL)
 # plus the accessor and a representative type from each re-exported source module.
-cat > "$CONSUMER/probe.ts" <<'TS'
+cat >"$CONSUMER/probe.ts" <<'TS'
 import {
   getPermissionsService,
   PERMISSIONS_UI_PROMPT_CHANNEL,
   type PermissionCheckResult,
   type PermissionUiPromptEvent,
+  type DelegationIdentity,
+  type DelegationReady,
+  type DelegationState,
+  type PendingDelegatedWait,
 } from "@gotgenes/pi-permission-system";
 
 void getPermissionsService;
@@ -72,6 +81,13 @@ const _e: PermissionUiPromptEvent | undefined = undefined;
 const _r: PermissionCheckResult | undefined = undefined;
 void _e;
 void _r;
+const service = getPermissionsService("child-session");
+const connect: ((identity: DelegationIdentity, options?: { signal?: AbortSignal }) => Promise<DelegationReady>) | undefined = service?.connectDelegation;
+const state: DelegationState | undefined = service?.getDelegationState();
+const dispose = service?.subscribeDelegatedWaits((pending: readonly PendingDelegatedWait[]) => { void pending; });
+void connect;
+void state;
+void dispose;
 TS
 
 # Install the packaged tarball plus the two peer deps a real consumer would have.

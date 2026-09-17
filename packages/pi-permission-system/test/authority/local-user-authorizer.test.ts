@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { SerialInteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 import { LocalUserAuthorizer } from "#src/authority/local-user-authorizer";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
-import { FORWARDED_PERMISSION_TIMEOUT_DECISION } from "#src/authority/permission-forwarding";
+import {
+  FORWARDED_PERMISSION_TIMEOUT_DECISION,
+  ForwardedPermissionDeadlineExpiredError,
+} from "#src/authority/permission-forwarding";
 import type { requestPermissionDecision } from "#src/authority/permission-prompt-component";
 import type { PromptPermissionDetails } from "#src/authority/permission-prompter";
 import { DECIDED_BY_HUMAN } from "#test/helpers/decision-fixtures";
@@ -167,7 +170,7 @@ describe("LocalUserAuthorizer", () => {
     const { deps, events, decisionFn, setPromptIndicator } = makeDeps();
     const authorizer = new LocalUserAuthorizer(deps);
     const { controller, forwardingDeadline } = makeForwardingDeadline();
-    controller.abort();
+    controller.abort(new ForwardedPermissionDeadlineExpiredError());
 
     await expect(
       authorizer.authorize(
@@ -206,7 +209,7 @@ describe("LocalUserAuthorizer", () => {
       expect(setPromptIndicator).toHaveBeenCalledWith(true),
     );
 
-    controller.abort();
+    controller.abort(new ForwardedPermissionDeadlineExpiredError());
     activation.resolve();
 
     await expect(pending).resolves.toMatchObject({

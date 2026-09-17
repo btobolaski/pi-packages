@@ -2,6 +2,24 @@ import { describe, expect, it, vi } from "vitest";
 import { SerialInteractivePromptQueue } from "#src/authority/interactive-prompt-queue";
 
 describe("SerialInteractivePromptQueue", () => {
+  it("a replacement instance waits for old UI cleanup for the same session", async () => {
+    const old = new SerialInteractivePromptQueue();
+    old.bind("reload-queue-test");
+    const cleanup = Promise.withResolvers<string>();
+    const pending = old.run(() => cleanup.promise);
+    await Promise.resolve();
+    old.invalidate("reloaded");
+    await expect(pending).rejects.toThrow("reloaded");
+    const replacement = new SerialInteractivePromptQueue();
+    replacement.bind("reload-queue-test");
+    const next = vi.fn(async () => "replacement");
+    const result = replacement.run(next);
+    await Promise.resolve();
+    expect(next).not.toHaveBeenCalled();
+    cleanup.resolve("old cleanup completed");
+    await expect(result).resolves.toBe("replacement");
+  });
+
   it("admits an interaction when idle", async () => {
     const queue = new SerialInteractivePromptQueue();
     const interaction = vi.fn().mockResolvedValue("approved");
@@ -186,11 +204,12 @@ describe("SerialInteractivePromptQueue", () => {
     expect(activeSignal?.aborted).toBe(true);
     expect(queuedInteraction).not.toHaveBeenCalled();
 
-    await expect(queue.run(async () => "new session")).resolves.toBe(
-      "new session",
-    );
-
+    const next = vi.fn(async () => "new session");
+    const nextResult = queue.run(next);
+    await Promise.resolve();
+    expect(next).not.toHaveBeenCalled();
     activeGate.resolve();
+    await expect(nextResult).resolves.toBe("new session");
     await Promise.resolve();
     expect(queuedInteraction).not.toHaveBeenCalled();
   });

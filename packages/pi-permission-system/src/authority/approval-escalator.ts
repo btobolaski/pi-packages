@@ -46,6 +46,18 @@ import type { PromptPayload } from "#src/presentation/prompt-payload";
 import type { DebugReviewLogger } from "#src/session-logger";
 import { toRecord } from "#src/value-guards";
 import type { TerminalAuthorizer } from "./authorizer";
+import {
+  cancelledPermissionDecision,
+  type DelegatedRequest,
+  delegatedTerminalPath,
+  publishDelegatedTerminal,
+  readDelegatedTerminal,
+  withPermissionSignal,
+} from "./forwarded-transaction";
+import {
+  type DelegationBinding,
+  INTERACTIVE_DELEGATION_CAPABILITY,
+} from "./permission-delegation";
 import type { PromptPermissionDetails } from "./permission-prompter";
 
 // ── Module-private helpers ────────────────────────────────────────────────
@@ -104,6 +116,8 @@ interface ForwardedRequestFacts {
 /** Constructor config for {@link ParentAuthorizer}. */
 export interface ParentAuthorizerDeps {
   forwardingDir: string;
+  /** Explicit binding bypasses ambient parent selection, including the UI self-target. */
+  delegation?: DelegationBinding;
   /** In-process subagent session registry for forwarding target resolution. */
   registry?: SubagentSessionRegistry;
   /** Whether the resolved target is draining its inbox, on whichever channel can say. */
@@ -144,9 +158,9 @@ const FILENAME_SAFE_REQUEST_ID = /^[A-Za-z0-9._-]+$/;
  * The id to write on the forwarded request: the requester's own, or a fresh
  * mint when that id could not safely name a file.
  *
- * At a relay hop the adopted id came from a request file on disk, which the
- * tolerant reader validates only as a string — so this is the boundary that
- * keeps an inbound id from choosing an outbound path.
+ * At a relay hop the adopted id came from a correlated request file on disk.
+ * Other callers can supply arbitrary IDs, so this outbound boundary still
+ * replaces IDs outside the format this node generates and forwards.
  */
 function forwardableRequestId(requesterRequestId: string): string {
   return FILENAME_SAFE_REQUEST_ID.test(requesterRequestId)
@@ -160,11 +174,9 @@ function forwardableRequestId(requesterRequestId: string): string {
  *
  * Owns the escalation-up role of the forwarded-permission behavior: builds
  * and persists a request file, then polls for the parent session's
- * response. `ctx` is bound once at construction — `selectAuthorizer` only
- * constructs a `ParentAuthorizer` for a context it has already confirmed has
- * no UI and is a subagent, so `authorize` never re-derives that dispatch
- * (formerly `ApprovalEscalator.requestApproval`'s `hasUI` / `!isSubagent`
- * arms, both dead once every caller routes through `selectAuthorizer`).
+ * response. `ctx` is bound once at construction. `selectAuthorizer` chooses
+ * this relay for an explicit delegation (including interactive children), or
+ * an ordinary subagent without UI; `authorize` does not re-derive that choice.
  */
 export class ParentAuthorizer implements TerminalAuthorizer {
   private readonly forwardingDir: string;
@@ -172,6 +184,7 @@ export class ParentAuthorizer implements TerminalAuthorizer {
   private readonly serving: TargetServingLookup;
   private readonly getTimeoutMs: () => number;
   private readonly logger: DebugReviewLogger;
+  private readonly delegation: DelegationBinding | undefined;
 
   constructor(
     private readonly ctx: ForwarderContext,
@@ -182,13 +195,14 @@ export class ParentAuthorizer implements TerminalAuthorizer {
     this.serving = deps.serving;
     this.getTimeoutMs = deps.getTimeoutMs;
     this.logger = deps.logger;
+    this.delegation = deps.delegation;
   }
 
   authorize(
     details: PromptPermissionDetails,
   ): Promise<PermissionPromptDecision> {
     const uiPrompt = buildUiPrompt(details);
-    return this.waitForForwardedApproval(this.ctx, {
+    const facts: ForwardedRequestFacts = {
       requestId: details.requestId,
       payload: details.payload,
       display: {
@@ -198,7 +212,162 @@ export class ParentAuthorizer implements TerminalAuthorizer {
       },
       sessionApproval: details.sessionApproval,
       accessIntent: details.accessIntent,
-    });
+    };
+    return this.delegation
+      ? this.waitForDelegatedApproval(
+          facts,
+          details.requestSignal,
+          this.delegation,
+        )
+      : this.waitForForwardedApproval(this.ctx, facts);
+  }
+
+  private async waitForDelegatedApproval(
+    facts: ForwardedRequestFacts,
+    originalSignal: AbortSignal | undefined,
+    binding: DelegationBinding,
+  ): Promise<PermissionPromptDecision> {
+    const identity = binding.identity;
+    const request = this.buildForwardedRequest(
+      this.ctx,
+      facts,
+      identity.childSessionId,
+      identity.parentSessionId,
+    );
+    request.requesterAgentName = identity.agentName;
+    if (facts.accessIntent)
+      request.accessIntent = {
+        ...facts.accessIntent,
+        requesterCwd: identity.childCwd,
+        principal: {
+          sessionId: identity.childSessionId,
+          agentName: identity.agentName,
+        },
+      };
+    const delegated: DelegatedRequest = {
+      ...request,
+      delegation: {
+        capability: INTERACTIVE_DELEGATION_CAPABILITY,
+        requestId: request.id,
+        delegationId: binding.delegationId,
+        identity,
+        expiresAt: request.expiresAt,
+      },
+    };
+    const endWait = binding.beginWait(request.id);
+    const signal = originalSignal
+      ? AbortSignal.any([originalSignal, binding.signal])
+      : binding.signal;
+    const terminalPath = delegatedTerminalPath(this.forwardingDir, delegated);
+    let location: PermissionForwardingLocation | null = null;
+    let requestPath: string | undefined;
+    const cancel = () => {
+      try {
+        publishDelegatedTerminal(
+          terminalPath,
+          delegated,
+          cancelledPermissionDecision({ signal, expiresAt: request.expiresAt }),
+        );
+      } catch (error) {
+        logPermissionForwardingError(
+          this.logger,
+          "Delegated cancellation could not settle",
+          error,
+        );
+      }
+      if (requestPath)
+        safeDeleteFile(this.logger, requestPath, "cancelled delegated request");
+    };
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      if (signal.aborted || !binding.isLive())
+        return cancelledPermissionDecision();
+      if (!delegated.accessIntent)
+        throw new Error("Delegated request has no child-fixed access intent");
+      location = ensurePermissionForwardingLocation(
+        this.logger,
+        this.forwardingDir,
+        identity.parentSessionId,
+      );
+      if (!location)
+        throw new Error("Delegated forwarding directory unavailable");
+      requestPath = join(location.requestsDir, `${request.id}.json`);
+      writeJsonFileAtomic(this.logger, requestPath, delegated);
+      this.logger.review("forwarded_permission.request_created", {
+        requestId: request.id,
+        delegationId: binding.delegationId,
+        requesterSessionId: identity.childSessionId,
+        targetSessionId: identity.parentSessionId,
+        expiresAt: request.expiresAt,
+      });
+      while (!isForwardingExpiryReached(request.expiresAt)) {
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- AbortSignal can change across poll awaits.
+        if (signal.aborted || !binding.isLive()) {
+          cancel();
+          return cancelledPermissionDecision();
+        }
+        let response = readDelegatedTerminal(terminalPath, delegated);
+        if (!response && !existsSync(requestPath)) {
+          // Settlement also unlinks the request; publication may have occurred
+          // after our first read. Only the atomic winner determines the outcome.
+          response = readDelegatedTerminal(terminalPath, delegated);
+          if (!response) {
+            const unavailable = abandon(
+              "The serving session abandoned the delegated permission request",
+            );
+            if (publishDelegatedTerminal(terminalPath, delegated, unavailable))
+              return unavailable;
+            response = readDelegatedTerminal(terminalPath, delegated);
+            if (!response)
+              throw new Error(
+                "Delegated terminal disappeared during abandonment",
+              );
+          }
+        }
+        if (response) {
+          // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Binding validation can synchronously abort the signal.
+          if (signal.aborted || !binding.isLive())
+            return cancelledPermissionDecision();
+          return {
+            ...response,
+            decidedBy: {
+              kind: "forwarded",
+              responderSessionId: identity.parentSessionId,
+              decision: response.decidedBy,
+            },
+          };
+        }
+        await withPermissionSignal(
+          sleep(
+            Math.min(
+              PERMISSION_FORWARDING_POLL_INTERVAL_MS,
+              request.expiresAt - Date.now(),
+            ),
+          ),
+          signal,
+        );
+      }
+      cancel();
+      return FORWARDED_PERMISSION_TIMEOUT_DECISION;
+    } catch (error) {
+      cancel();
+      return signal.aborted
+        ? cancelledPermissionDecision()
+        : abandon(
+            `Delegated permission exchange unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          );
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      if (requestPath)
+        safeDeleteFile(
+          this.logger,
+          requestPath,
+          "delegated permission request",
+        );
+      if (location)
+        cleanupPermissionForwardingLocationIfEmpty(this.logger, location);
+      endWait();
+    }
   }
 
   // ── Private methods ────────────────────────────────────────────────────
@@ -210,9 +379,8 @@ export class ParentAuthorizer implements TerminalAuthorizer {
     const requesterSessionId = getSessionId(ctx);
     const target = resolvePermissionForwardingTarget({
       hasUI: ctx.hasUI,
-      // Invariant: selectAuthorizer only selects ParentAuthorizer for a
-      // no-UI subagent context, so this is always true — no detection dep
-      // needed to re-derive it here.
+      // The legacy path only serves a no-UI subagent. Explicit interactive
+      // bindings take waitForDelegatedApproval instead.
       isSubagent: true,
       currentSessionId: requesterSessionId,
       env: process.env,

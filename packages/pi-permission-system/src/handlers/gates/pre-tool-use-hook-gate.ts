@@ -79,6 +79,9 @@ export class PreToolUseHookGate implements PreToolUseHookEvaluator {
       });
     }
 
+    // The handler owns the cancellation outcome; a late hook is not a verdict.
+    if (!tcc.lifetime.isActive()) return { action: "continue" };
+
     switch (decision.decision) {
       case "allow":
         this.report(tcc, decision, requestId, "allow", "hook_approved");

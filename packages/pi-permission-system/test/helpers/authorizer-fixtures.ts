@@ -83,6 +83,7 @@ export function makeAuthorizerSelectionDeps(
   overrides: Partial<AuthorizerSelectionTestDeps> = {},
 ): AuthorizerSelectionTestDeps {
   return {
+    delegation: overrides.delegation,
     detection: overrides.detection ?? makeDetection(),
     events: overrides.events ?? {
       emit: vi.fn(),

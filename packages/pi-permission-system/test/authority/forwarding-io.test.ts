@@ -1,7 +1,9 @@
+import { spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -22,6 +24,7 @@ import {
   readForwardedPermissionResponse,
   tryRemoveDirectoryIfEmpty,
   writeJsonFileAtomic,
+  writeJsonFileAtomicIfAbsent,
 } from "#src/authority/forwarding-io";
 import {
   createPermissionForwardingLocation,
@@ -172,6 +175,62 @@ describe("forwarding artifact permissions", () => {
     expect(statSync(filePath).mode & 0o777).toBe(0o600);
   });
 
+  it("publishes exactly one owner-only terminal file without replacement", () => {
+    root = mkdtempSync(join(tmpdir(), "io-modes-"));
+    const filePath = join(root, "terminal.json");
+
+    expect(
+      writeJsonFileAtomicIfAbsent(null, filePath, { winner: "first" }),
+    ).toBe(true);
+    expect(
+      writeJsonFileAtomicIfAbsent(null, filePath, { winner: "second" }),
+    ).toBe(false);
+    expect(statSync(filePath).mode & 0o777).toBe(0o600);
+    expect(readFileSync(filePath, "utf-8")).toBe('{"winner":"first"}');
+  });
+
+  it("arbitrates a release-barrier terminal race with a separate Node process", async () => {
+    root = mkdtempSync(join(tmpdir(), "io-modes-"));
+    const filePath = join(root, "terminal-race.json");
+    const readyPath = join(root, "child-ready");
+    const releasePath = join(root, "release-child");
+    const script = `
+      const { existsSync, linkSync, unlinkSync, writeFileSync } = require("node:fs");
+      const target = process.argv[1], ready = process.argv[2], release = process.argv[3];
+      const temp = target + ".child." + process.pid;
+      writeFileSync(temp, JSON.stringify({ winner: "child" }), { mode: 0o600 });
+      writeFileSync(ready, "ready");
+      while (!existsSync(release)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      try { linkSync(temp, target); process.exitCode = 0; }
+      catch (error) { process.exitCode = error.code === "EEXIST" ? 1 : 2; }
+      finally { try { unlinkSync(temp); } catch {} }
+    `;
+    const child = spawn(process.execPath, [
+      "-e",
+      script,
+      filePath,
+      readyPath,
+      releasePath,
+    ]);
+    while (!existsSync(readyPath)) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(
+      writeJsonFileAtomicIfAbsent(null, filePath, { winner: "parent" }),
+    ).toBe(true);
+    writeFileSync(releasePath, "go");
+    const childExit = await new Promise<number | null>((resolve) => {
+      child.on("exit", resolve);
+    });
+
+    expect(childExit).toBe(1);
+    expect(JSON.parse(readFileSync(filePath, "utf-8"))).toEqual({
+      winner: "parent",
+    });
+    expect(existsSync(`${filePath}.child.${child.pid}`)).toBe(false);
+  });
+
   it("creates a forwarding directory owner-only", () => {
     root = mkdtempSync(join(tmpdir(), "io-modes-"));
     const dirPath = join(root, "sessions", "parent", "requests");
@@ -184,7 +243,7 @@ describe("forwarding artifact permissions", () => {
 
 // ── readForwardedPermissionRequest ─────────────────────────────────────────
 
-describe("readForwardedPermissionRequest — timing fields", () => {
+describe("readForwardedPermissionRequest — envelope fields", () => {
   let root: string;
 
   afterEach(() => {
@@ -207,6 +266,27 @@ describe("readForwardedPermissionRequest — timing fields", () => {
       requesterAgentName: "researcher",
     };
   }
+
+  it.each([
+    "",
+    "../sentinel",
+    "nested/../../sentinel",
+    "..\\sentinel",
+    "bad\u0000id",
+  ])("rejects path-redirecting or empty request ID %j", (id) => {
+    expect(writeAndRead({ ...baseRequest(), id })).toBeNull();
+  });
+
+  it.each([
+    "req-1",
+    "a.b_2",
+    ".",
+    "..",
+    "%2E",
+    "legacy id",
+  ])("preserves a literal filename-safe request ID %j", (id) => {
+    expect(writeAndRead({ ...baseRequest(), id })?.id).toBe(id);
+  });
 
   it("round-trips an absolute deadline", () => {
     expect(

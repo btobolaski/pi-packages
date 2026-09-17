@@ -30,6 +30,8 @@ export interface ForwardedAskProvenance {
 /** Details passed when prompting the user for a permission decision. */
 export interface PromptPermissionDetails {
   requestId: string;
+  /** Original call/request lifetime, captured before any asynchronous work; never serialized. */
+  requestSignal?: AbortSignal;
   source: PermissionReviewSource;
   agentName: string | null;
   /**

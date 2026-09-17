@@ -1,6 +1,7 @@
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -8,26 +9,45 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { describe, expect, test, vi } from "vitest";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ParentAuthorizer } from "#src/authority/approval-escalator";
 import {
+  cancelledPermissionDecision,
+  type DelegatedRequest,
+  delegatedTerminalPath,
+  publishDelegatedTerminal,
+  readDelegatedTerminal,
+} from "#src/authority/forwarded-transaction";
+import type { DelegationBinding } from "#src/authority/permission-delegation";
+import { createUnavailablePermissionDecision } from "#src/authority/permission-dialog";
+import {
+  FORWARDED_PERMISSION_TIMEOUT_DECISION,
   type ForwardedPermissionRequest,
   PERMISSION_FORWARDING_SERVING_GRACE_MS,
 } from "#src/authority/permission-forwarding";
 import { ServingSessionRegistry } from "#src/authority/serving-registry";
 import {
   createForwardingTempDir,
+  makeForwardedAccessIntent,
   makeForwarderContext,
   makeLivenessJudge,
   makeParentAuthorizerDeps,
   makeSubagentRegistry,
   publishServingHeartbeat,
+  stubNoSubagentEnvironment,
 } from "#test/helpers/forwarding-fixtures";
 import {
   makePromptDetails,
   makePromptPayload,
 } from "#test/helpers/prompt-details-fixtures";
+
+vi.mock("node:fs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs")>()),
+}));
+
+beforeEach(stubNoSubagentEnvironment);
+afterEach(() => vi.unstubAllEnvs());
 
 // ── Local poll helper ────────────────────────────────────────────────────
 //
@@ -88,6 +108,258 @@ async function exchangeWith(
   );
   return decisionPromise;
 }
+
+describe("ParentAuthorizer delegated failure cleanup", () => {
+  let temp: ReturnType<typeof createForwardingTempDir>;
+  const approval = {
+    approved: true,
+    state: "approved" as const,
+    decidedBy: { kind: "user" as const, via: "dialog" as const },
+  };
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    temp = createForwardingTempDir("parent-session");
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    temp.cleanup();
+  });
+
+  function fixture() {
+    const turn = new AbortController();
+    const bindingController = new AbortController();
+    const endWait = vi.fn();
+    const beginWait = vi.fn(() => endWait);
+    const isLive = vi.fn(() => true);
+    const binding: DelegationBinding = {
+      identity: {
+        parentSessionId: "parent-session",
+        childSessionId: "child-session",
+        agentName: "worker",
+        childCwd: "/child",
+      },
+      delegationId: "binding",
+      signal: bindingController.signal,
+      isLive,
+      beginWait,
+    };
+    const authorizer = new ParentAuthorizer(
+      makeForwarderContext({ hasUI: true, sessionId: "child-session" }),
+      makeParentAuthorizerDeps({
+        forwardingDir: temp.forwardingDir,
+        delegation: binding,
+        getTimeoutMs: () => 500,
+      }),
+    );
+    const details = makePromptDetails({
+      requestId: "perm-delegated",
+      accessIntent: makeForwardedAccessIntent(),
+      requestSignal: turn.signal,
+    });
+    const requestPath = join(temp.location.requestsDir, "perm-delegated.json");
+    const readRequest = () =>
+      JSON.parse(readFileSync(requestPath, "utf8")) as DelegatedRequest;
+    return {
+      authorizer,
+      details,
+      turn,
+      bindingController,
+      isLive,
+      beginWait,
+      endWait,
+      requestPath,
+      readRequest,
+    };
+  }
+
+  test("commits the exact timeout terminal and cannot adopt a late approval", async () => {
+    const f = fixture();
+    const pending = f.authorizer.authorize(f.details);
+    const request = f.readRequest();
+    const path = delegatedTerminalPath(temp.forwardingDir, request);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(await pending).toEqual(FORWARDED_PERMISSION_TIMEOUT_DECISION);
+    expect(readDelegatedTerminal(path, request)).toEqual(
+      FORWARDED_PERMISSION_TIMEOUT_DECISION,
+    );
+    expect(publishDelegatedTerminal(path, request, approval)).toBe(false);
+    expect(f.beginWait).toHaveBeenCalledExactlyOnceWith("perm-delegated");
+    expect(f.endWait).toHaveBeenCalledOnce();
+    expect(existsSync(f.requestPath)).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("fails closed and ends observation when child-fixed intent is absent", async () => {
+    const f = fixture();
+    f.details.accessIntent = undefined;
+    expect(await f.authorizer.authorize(f.details)).toEqual(
+      createUnavailablePermissionDecision(
+        "Delegated permission exchange unavailable: Delegated request has no child-fixed access intent",
+      ),
+    );
+    expect(f.beginWait).toHaveBeenCalledExactlyOnceWith("perm-delegated");
+    expect(f.endWait).toHaveBeenCalledOnce();
+    expect(existsSync(f.requestPath)).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("ends observation when the forwarding location cannot be prepared", async () => {
+    const f = fixture();
+    rmSync(temp.location.requestsDir, { recursive: true });
+    writeFileSync(temp.location.requestsDir, "not a directory");
+    expect(await f.authorizer.authorize(f.details)).toEqual(
+      createUnavailablePermissionDecision(
+        "Delegated permission exchange unavailable: Delegated forwarding directory unavailable",
+      ),
+    );
+    expect(f.beginWait).toHaveBeenCalledExactlyOnceWith("perm-delegated");
+    expect(f.endWait).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("fails closed on an unreadable terminal without replacing its immutable contents", async () => {
+    const f = fixture();
+    const pending = f.authorizer.authorize(f.details);
+    const request = f.readRequest();
+    const path = delegatedTerminalPath(temp.forwardingDir, request);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "not json");
+    await vi.advanceTimersByTimeAsync(250);
+    expect(await pending).toEqual(
+      createUnavailablePermissionDecision(
+        "Delegated permission exchange unavailable: Unreadable delegated terminal",
+      ),
+    );
+    expect(readFileSync(path, "utf8")).toBe("not json");
+    expect(f.endWait).toHaveBeenCalledOnce();
+    expect(existsSync(f.requestPath)).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("fails closed when the competing terminal disappears after abandonment loses publication", async () => {
+    const f = fixture();
+    const pending = f.authorizer.authorize(f.details);
+    const request = f.readRequest();
+    const path = delegatedTerminalPath(temp.forwardingDir, request);
+    const fs = await import("node:fs");
+    const link = fs.linkSync;
+    let contested = false;
+    let competitorWon = false;
+    const publication = vi
+      .spyOn(fs, "linkSync")
+      .mockImplementation((source, target) => {
+        if (target !== path || contested) {
+          link(source, target);
+          return;
+        }
+        contested = true;
+        competitorWon = publishDelegatedTerminal(path, request, approval);
+        try {
+          link(source, target); // Real EEXIST makes abandonment lose.
+        } finally {
+          rmSync(path); // Lose the winner before the correlated re-read.
+        }
+      });
+    rmSync(f.requestPath);
+
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(await pending).toEqual(
+      createUnavailablePermissionDecision(
+        "Delegated permission exchange unavailable: Delegated terminal disappeared during abandonment",
+      ),
+    );
+    expect(competitorWon).toBe(true);
+    // The existing error cleanup makes the third publication: cancellation.
+    expect(publication).toHaveBeenCalledTimes(3);
+    expect(readDelegatedTerminal(path, request)).toEqual(
+      cancelledPermissionDecision(),
+    );
+    expect(f.beginWait).toHaveBeenCalledExactlyOnceWith("perm-delegated");
+    expect(f.endWait).toHaveBeenCalledOnce();
+    expect(existsSync(f.requestPath)).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("cleans up a request publication exception without authorizing", async () => {
+    const f = fixture();
+    mkdirSync(f.requestPath);
+    const decision = await f.authorizer.authorize(f.details);
+    const reason = expect.stringContaining(
+      "Delegated permission exchange unavailable:",
+    );
+    expect(decision).toEqual({
+      approved: false,
+      state: "denied",
+      confirmationUnavailable: true,
+      denialReason: reason,
+      decidedBy: { kind: "unavailable", reason },
+    });
+    expect(f.endWait).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test.each([
+    "turn",
+    "binding",
+    "not-live",
+  ] as const)("ends a wait rejected before publication (%s)", async (source) => {
+    const f = fixture();
+    if (source === "turn") f.turn.abort();
+    else if (source === "binding") f.bindingController.abort();
+    else f.isLive.mockReturnValue(false);
+    expect(await f.authorizer.authorize(f.details)).toEqual(
+      cancelledPermissionDecision(),
+    );
+    expect(f.beginWait).toHaveBeenCalledExactlyOnceWith("perm-delegated");
+    expect(f.endWait).toHaveBeenCalledOnce();
+    expect(existsSync(f.requestPath)).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("settles cancellation while waiting and ignores a later answer", async () => {
+    const f = fixture();
+    const pending = f.authorizer.authorize(f.details);
+    const request = f.readRequest();
+    const path = delegatedTerminalPath(temp.forwardingDir, request);
+    f.turn.abort();
+    expect(await pending).toEqual(cancelledPermissionDecision());
+    expect(readDelegatedTerminal(path, request)).toEqual(
+      cancelledPermissionDecision(),
+    );
+    expect(publishDelegatedTerminal(path, request, approval)).toBe(false);
+    expect(f.endWait).toHaveBeenCalledOnce();
+    expect(existsSync(f.requestPath)).toBe(false);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("rechecks cancellation after finding an approval without undoing its committed terminal", async () => {
+    const f = fixture();
+    const pending = f.authorizer.authorize(f.details);
+    const request = f.readRequest();
+    const path = delegatedTerminalPath(temp.forwardingDir, request);
+    publishDelegatedTerminal(path, request, approval);
+    let checks = 0;
+    f.isLive.mockImplementation(() => {
+      checks++;
+      if (checks === 2) {
+        f.turn.abort();
+        return false;
+      }
+      return true;
+    });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(checks).toBe(2);
+    expect(await pending).toEqual(cancelledPermissionDecision());
+    expect(readDelegatedTerminal(path, request)).toEqual(approval);
+    expect(f.endWait).toHaveBeenCalledOnce();
+    expect(existsSync(f.requestPath)).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe("ParentAuthorizer provenance relay", () => {
   test("nests the responder's own decider under the forwarding hop", async () => {

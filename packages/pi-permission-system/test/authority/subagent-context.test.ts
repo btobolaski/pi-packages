@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { SUBAGENT_ENV_HINT_KEYS } from "#src/authority/permission-forwarding";
 import {
   isRegisteredSubagentChild,
@@ -8,6 +8,9 @@ import {
 } from "#src/authority/subagent-context";
 import { SubagentSessionRegistry } from "#src/authority/subagent-registry";
 import { posixPathFlavor, win32PathFlavor } from "#src/path/path-flavor";
+import { stubNoSubagentEnvironment } from "#test/helpers/forwarding-fixtures";
+
+beforeEach(stubNoSubagentEnvironment);
 
 afterEach(() => {
   vi.unstubAllEnvs();

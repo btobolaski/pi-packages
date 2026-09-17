@@ -13,6 +13,7 @@ import type { DebugReviewLogger } from "#src/session-logger";
 import { ParentAuthorizer } from "./approval-escalator";
 import { DenyingAuthorizer } from "./denying-authorizer";
 import { LocalUserAuthorizer } from "./local-user-authorizer";
+import type { PermissionDelegation } from "./permission-delegation";
 import type { PromptPermissionDetails } from "./permission-prompter";
 import type { SubagentDetector } from "./subagent-detection";
 
@@ -78,9 +79,9 @@ export interface TerminalAuthorizer {
  * whether this node adjudicates them with its own chain.
  *
  * The chain role is the selection's product, not a discriminator a consumer
- * re-derives: `selectAuthorizer` tests `hasUI` before `isSubagent`, so a
- * subagent that has its own UI decides locally, and re-deriving the role from
- * `detection.isSubagent(ctx)` alone would get that case wrong.
+ * re-derives: explicit delegation takes precedence over UI. Otherwise,
+ * `hasUI` precedes `isSubagent`, so an ordinary subagent with its own UI
+ * decides locally. Subagent detection alone cannot determine this role.
  */
 export interface SelectedAuthority {
   /** The terminal that decides this node's asks, or relays them upward. */
@@ -97,6 +98,7 @@ export interface SelectedAuthority {
 
 /** Construction inputs for {@link selectAuthorizer}. */
 export interface AuthorizerSelectionDeps {
+  delegation?: Pick<PermissionDelegation, "getState" | "getBinding">;
   /** Single owner of subagent detection; the ParentAuthorizer-selection predicate. */
   detection: SubagentDetector;
   /** Event bus used by `LocalUserAuthorizer` for the `permissions:ui_prompt` broadcast. */
@@ -133,6 +135,22 @@ export function selectAuthorizer(
   ctx: ExtensionContext,
   deps: AuthorizerSelectionDeps,
 ): SelectedAuthority {
+  if (deps.delegation && deps.delegation.getState().status !== "not-required") {
+    const binding = deps.delegation.getBinding();
+    return {
+      terminal: binding
+        ? new ParentAuthorizer(ctx, {
+            forwardingDir: deps.forwardingDir,
+            registry: deps.registry,
+            serving: deps.serving,
+            getTimeoutMs: deps.getForwardingTimeoutMs,
+            logger: deps.logger,
+            delegation: binding,
+          })
+        : new DenyingAuthorizer(),
+      adjudicatesLocally: false,
+    };
+  }
   if (ctx.hasUI) {
     return {
       terminal: new LocalUserAuthorizer({

@@ -1,4 +1,5 @@
 import type { AskEscalator } from "#src/authority/authorizer-selection";
+import { cancelledPermissionDecision } from "#src/authority/forwarded-transaction";
 import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import type { DecisionReporter } from "#src/decision-reporter";
 import { applyPermissionGate } from "#src/permission-gate";
@@ -24,7 +25,15 @@ import {
   deriveResolution,
   resolveYoloGrant,
 } from "./helpers";
-import type { GateOutcome } from "./types";
+import {
+  type GateOutcome,
+  type PermissionRequestLifetime,
+  UNINTERRUPTED_REQUEST,
+} from "./types";
+
+function cancelledOutcome(): GateOutcome {
+  return { action: "block", reason: "Permission request cancelled" };
+}
 
 // ── GateRunner class ───────────────────────────────────────────────────────
 
@@ -58,7 +67,12 @@ export class GateRunner {
    * The request id is minted here, before the branch, so a request that never
    * prompts is identified exactly as one that does.
    */
-  async run(gate: GateResult, agentName: string | null): Promise<GateOutcome> {
+  async run(
+    gate: GateResult,
+    agentName: string | null,
+    lifetime: PermissionRequestLifetime = UNINTERRUPTED_REQUEST,
+  ): Promise<GateOutcome> {
+    if (!lifetime.isActive()) return cancelledOutcome();
     if (!gate) {
       return { action: "allow" };
     }
@@ -76,7 +90,7 @@ export class GateRunner {
       }
       return { action: "allow" };
     }
-    return this.runDescriptor(gate, agentName, requestId);
+    return this.runDescriptor(gate, agentName, requestId, lifetime);
   }
 
   // ── Private helpers ──────────────────────────────────────────────────────
@@ -93,6 +107,7 @@ export class GateRunner {
     descriptor: GateDescriptor,
     agentName: string | null,
     requestId: string,
+    lifetime: PermissionRequestLifetime,
   ): Promise<GateOutcome> {
     // 1. Resolve permission state — pre-check, pre-resolved, or via resolver
     let check: PermissionCheckResult;
@@ -209,10 +224,12 @@ export class GateRunner {
           requestId,
           payload,
           ...descriptor.promptDetails,
+          ...(lifetime.signal ? { requestSignal: lifetime.signal } : {}),
           ...(descriptor.sessionApproval
             ? { sessionApproval: descriptor.sessionApproval.toForwardedData() }
             : {}),
         });
+        if (!lifetime.isActive()) return cancelledPermissionDecision();
         autoApproved = decision.autoApproved === true;
         confirmationUnavailable = decision.confirmationUnavailable === true;
         return decision;
@@ -228,6 +245,8 @@ export class GateRunner {
       },
       messages,
     });
+
+    if (!lifetime.isActive()) return cancelledOutcome();
 
     // 4. Determine whether session approval was granted
     const hasSessionApproval =
@@ -253,6 +272,7 @@ export class GateRunner {
 
     // 6. Record session approval — tell the store; it owns the per-pattern loop
     // hasSessionApproval already implies gateResult.action === "allow"
+    if (!lifetime.isActive()) return cancelledOutcome();
     if (hasSessionApproval && descriptor.sessionApproval) {
       this.recorder.recordSessionApproval(descriptor.sessionApproval);
     }

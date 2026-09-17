@@ -17,6 +17,10 @@ vi.mock("../src/active-agent", () => ({
 
 // ── Test helpers ───────────────────────────────────────────────────────────
 
+import {
+  type DelegationState,
+  PermissionDelegation,
+} from "#src/authority/permission-delegation";
 import type { DEFAULT_EXTENSION_CONFIG } from "#src/extension-config";
 import { win32PathFlavor } from "#src/path/path-flavor";
 import { SessionApproval } from "#src/session-approval";
@@ -58,6 +62,134 @@ beforeEach(() => {
 });
 
 describe("PermissionSession", () => {
+  describe("delegated lifetime", () => {
+    const identity = {
+      parentSessionId: "parent",
+      childSessionId: "session-test",
+      agentName: "configured-worker",
+      childCwd: "/test/project",
+    };
+
+    async function delegatedSession() {
+      const ctx = makeCtx();
+      const bindingController = new AbortController();
+      const delegation = new PermissionDelegation(
+        { getContext: () => ctx, canonicalizeCwd: (value) => value },
+        {
+          connect: async (value, delegationId) => ({
+            capability: "interactive-delegation-v1",
+            delegationId,
+            parentSessionId: value.parentSessionId,
+            childSessionId: value.childSessionId,
+          }),
+          discardBinding: vi.fn(),
+          getBindingSignal: () => bindingController.signal,
+          isBindingLive: () => !bindingController.signal.aborted,
+          close: () => bindingController.abort(),
+        },
+        true,
+      );
+      const fixture = createSession({ delegation });
+      fixture.session.activate(ctx);
+      await delegation.connect(identity);
+      return { ...fixture, ctx, delegation, bindingController };
+    }
+
+    it.each<{ state: DelegationState; ready: boolean }>([
+      { state: { status: "not-required" }, ready: true },
+      { state: { status: "unbound" }, ready: false },
+      {
+        state: { status: "connecting", identity, delegationId: "binding" },
+        ready: false,
+      },
+      {
+        state: { status: "ready", identity, delegationId: "binding" },
+        ready: true,
+      },
+      {
+        state: {
+          status: "unavailable",
+          code: "unavailable",
+          identity,
+          delegationId: "binding",
+        },
+        ready: false,
+      },
+      { state: { status: "closed", code: "closed" }, ready: false },
+    ])("reports readiness for $state.status", async ({ state, ready }) => {
+      const { session, delegation } = await delegatedSession();
+      vi.spyOn(delegation, "getState").mockReturnValue(state);
+      expect(session.isPermissionReady()).toBe(ready);
+      session.deactivate();
+    });
+
+    it("keeps an undelegated session ready", () => {
+      const { session } = createSession();
+      expect(session.isPermissionReady()).toBe(true);
+      expect(session.capturePermissionSignal().aborted).toBe(false);
+      session.deactivate();
+    });
+
+    it.each([
+      "turn",
+      "binding",
+      "session",
+    ] as const)("captures %s cancellation", async (source) => {
+      const { session, bindingController } = await delegatedSession();
+      const turn = new AbortController();
+      const captured = session.capturePermissionSignal(turn.signal);
+      expect(captured.aborted).toBe(false);
+      if (source === "turn") turn.abort();
+      else if (source === "binding") bindingController.abort();
+      else session.deactivate();
+      expect(captured.aborted).toBe(true);
+      session.deactivate();
+    });
+
+    it("retains a same-ID lifetime and retires it before activating a different session", async () => {
+      const { session, ctx, delegation, forwarding } = await delegatedSession();
+      const captured = session.capturePermissionSignal();
+      const close = vi.spyOn(delegation, "close");
+      session.activate(ctx);
+      expect(captured.aborted).toBe(false);
+      expect(close).not.toHaveBeenCalled();
+      vi.mocked(forwarding.start).mockClear();
+      const replacement = makeCtx();
+      vi.mocked(replacement.sessionManager.getSessionId).mockReturnValue(
+        "replacement",
+      );
+      session.activate(replacement);
+      expect(captured.aborted).toBe(true);
+      expect(close).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledBefore(vi.mocked(forwarding.start));
+      expect(session.getRuntimeContext()).toBe(replacement);
+      expect(session.isPermissionReady()).toBe(false);
+    });
+
+    it("resets an activated session only after cancelling the old lifetime", async () => {
+      const { session, ctx, delegation, forwarding } = await delegatedSession();
+      const captured = session.capturePermissionSignal();
+      const close = vi.spyOn(delegation, "close");
+      vi.mocked(forwarding.start).mockClear();
+      session.resetForNewSession(ctx, true);
+      expect(captured.aborted).toBe(true);
+      expect(close).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledBefore(vi.mocked(forwarding.start));
+      expect(session.getRuntimeContext()).toBe(ctx);
+    });
+
+    it("uses the bound configured agent identity instead of ambient names", async () => {
+      const { session, ctx } = await delegatedSession();
+      mockGetActiveAgentName.mockReturnValue("ambient-agent");
+      mockGetActiveAgentNameFromSystemPrompt.mockReturnValue("prompt-agent");
+      expect(session.resolveAgentName(ctx, "prompt")).toBe("configured-worker");
+      expect(session.lastKnownActiveAgentName).toBe("configured-worker");
+      expect(mockGetActiveAgentName).not.toHaveBeenCalled();
+      expect(mockGetActiveAgentNameFromSystemPrompt).not.toHaveBeenCalled();
+      session.deactivate();
+    });
+  });
+
   describe("activate and deactivate", () => {
     it("stores the context on activate", () => {
       const { session, forwarding } = createSession();
@@ -115,12 +247,16 @@ describe("PermissionSession", () => {
       expect(pm.configureForCwd).toHaveBeenCalledWith(undefined);
     });
 
-    it("deactivates the old selection before activating the new context", () => {
+    it.each([
+      "initial",
+      "activated",
+    ])("deactivates selection once before resetting an %s session", (state) => {
       const { session, authorizerSelection } = createSession();
       const ctx = makeCtx();
-
+      if (state === "activated") session.activate(ctx);
+      vi.mocked(authorizerSelection.activate).mockClear();
       session.resetForNewSession(ctx, true);
-
+      expect(authorizerSelection.deactivate).toHaveBeenCalledOnce();
       expect(vi.mocked(authorizerSelection.deactivate)).toHaveBeenCalledBefore(
         vi.mocked(authorizerSelection.activate),
       );

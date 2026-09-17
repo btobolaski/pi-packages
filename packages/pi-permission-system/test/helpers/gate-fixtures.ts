@@ -8,7 +8,10 @@ import type { DecisionReporter } from "#src/decision-reporter";
 import type { GateDescriptor } from "#src/handlers/gates/descriptor";
 import { GateRunner } from "#src/handlers/gates/runner";
 import type { ToolCallGateInputs } from "#src/handlers/gates/tool-call-gate-pipeline";
-import type { ToolCallContext } from "#src/handlers/gates/types";
+import {
+  type ToolCallContext,
+  UNINTERRUPTED_REQUEST,
+} from "#src/handlers/gates/types";
 import { pathFlavorForPlatform } from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 import type { ScopedPermissionResolver } from "#src/permission-resolver";
@@ -158,6 +161,7 @@ export function makeTcc(
     input: { command: "cat .env" },
     toolCallId: "tc-1",
     cwd: "/test/project",
+    lifetime: UNINTERRUPTED_REQUEST,
     ...overrides,
   };
 }

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -118,6 +118,109 @@ async function escalateForwardedAsk(
 
   return escalator.lastDetails();
 }
+
+describe("processInbox — inbound correlation", () => {
+  test.each([
+    "missing response",
+    "existing response",
+    "expired forgery",
+  ])("rejects a substituted legacy ID before touching the victim's %s", async (schedule) => {
+    temp = createForwardingTempDir("parent-session");
+    const victim = temp.writeRequest({
+      id: "victim",
+      accessIntent: makeForwardedAccessIntent(),
+    });
+    const responsePath = join(temp.location.responsesDir, "victim.json");
+    const sentinel = "untouched response";
+    if (schedule !== "missing response") writeFileSync(responsePath, sentinel);
+    const invalidPath = join(temp.location.requestsDir, "a-forged.json");
+    writeFileSync(
+      invalidPath,
+      JSON.stringify({
+        ...victim,
+        ...(schedule === "expired forgery"
+          ? { createdAt: 1, expiresAt: 2 }
+          : {}),
+        sessionApproval: { surface: "bash", patterns: ["*"] },
+      }),
+    );
+    const resolve = vi.fn(() => {
+      // The invalid file sorts before the legitimate request. Its processing
+      // must not create, replace, or delete the victim's response.
+      if (schedule === "missing response")
+        expect(existsSync(responsePath)).toBe(false);
+      else expect(readFileSync(responsePath, "utf8")).toBe(sentinel);
+      return makeCheckResult({ state: "ask" });
+    });
+    const escalate = vi.fn(
+      async (
+        details: PromptPermissionDetails,
+      ): Promise<PermissionPromptDecision> => ({
+        approved: true,
+        state: details.sessionApproval
+          ? "approved_for_serving_session"
+          : "approved",
+        decidedBy: DECIDED_BY_HUMAN,
+      }),
+    );
+    const deps = makeServerDeps({
+      forwardingDir: temp.forwardingDir,
+      policy: { resolve },
+      escalator: { escalate },
+    });
+    await new ForwardedRequestServer(deps).processInbox(
+      makeForwarderContext({ hasUI: true, sessionId: "parent-session" }),
+    );
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(victim.accessIntent);
+    expect(escalate).toHaveBeenCalledOnce();
+    expect(deps.recorder.recordSessionApproval).not.toHaveBeenCalled();
+    expect(deps.broadcaster.emitDecision).toHaveBeenCalledOnce();
+    expect(existsSync(invalidPath)).toBe(false);
+    expect(readResponse(temp, "victim")).toMatchObject({
+      approved: true,
+      state: "approved",
+      decidedBy: DECIDED_BY_HUMAN,
+    });
+  });
+
+  test.each([
+    ["../sentinel", false],
+    ["../sentinel", true],
+    ["nested/../../sentinel", false],
+    ["nested/../../sentinel", true],
+  ])("does not redirect response IO for ID %j (expired=%s)", async (id, expired) => {
+    temp = createForwardingTempDir("parent-session");
+    const request = temp.writeRequest({
+      id: "actual-inbox-file",
+      accessIntent: makeForwardedAccessIntent(),
+    });
+    const invalidPath = join(
+      temp.location.requestsDir,
+      "actual-inbox-file.json",
+    );
+    writeFileSync(
+      invalidPath,
+      JSON.stringify({
+        ...request,
+        id,
+        ...(expired ? { createdAt: 1, expiresAt: 2 } : {}),
+        sessionApproval: { surface: "bash", patterns: ["*"] },
+      }),
+    );
+    const sentinelPath = join(temp.location.sessionRootDir, "sentinel.json");
+    writeFileSync(sentinelPath, "must survive unchanged");
+    const deps = makeServerDeps({ forwardingDir: temp.forwardingDir });
+    await new ForwardedRequestServer(deps).processInbox(
+      makeForwarderContext({ hasUI: true, sessionId: "parent-session" }),
+    );
+    expect(readFileSync(sentinelPath, "utf8")).toBe("must survive unchanged");
+    expect(deps.policy.resolve).not.toHaveBeenCalled();
+    expect(deps.escalator.escalate).not.toHaveBeenCalled();
+    expect(deps.recorder.recordSessionApproval).not.toHaveBeenCalled();
+    expect(deps.broadcaster.emitDecision).not.toHaveBeenCalled();
+    expect(existsSync(invalidPath)).toBe(false);
+  });
+});
 
 describe("processInbox — recorded-authority resolution", () => {
   test("auto-approves and writes an approved response when the serving policy allows", async () => {
@@ -332,6 +435,7 @@ describe("processInbox — recorded-authority resolution", () => {
     expect(resolve).toHaveBeenCalledWith(accessIntent);
     expect(escalate).toHaveBeenCalledWith({
       requestId: "req-ask",
+      requestSignal: expect.any(AbortSignal),
       source: "tool_call",
       agentName: "Explore",
       surface: "bash",
@@ -709,6 +813,7 @@ describe("processInbox — the serving node's chain adjudicates a forwarded ask"
       hasUI: true,
       mode: "tui",
       ui: { select: vi.fn(), input: vi.fn(), custom: vi.fn() },
+      sessionManager: { getSessionId: () => "parent-session" },
     } as unknown as ExtensionContext;
   }
 

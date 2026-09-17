@@ -64,6 +64,8 @@ export interface ServingHeartbeat {
   /** The serving process, so a killed session is detectable without waiting out staleness. */
   pid: number;
   updatedAt: number;
+  /** Explicit protocol capabilities; absent on an older provider means none. */
+  capabilities: readonly string[];
 }
 
 /**
@@ -201,6 +203,8 @@ export interface ServingHeartbeatStoreDeps {
   pid?: number;
   /** Injected so a test can decide which pids are running. */
   isProcessAlive?: (pid: number) => boolean;
+  /** Protocol capabilities installed before this instance advertises service. */
+  capabilities?: readonly string[];
 }
 
 /**
@@ -223,6 +227,7 @@ export class ServingHeartbeatStore
   private readonly now: () => number;
   private readonly pid: number;
   private readonly isProcessAlive: (pid: number) => boolean;
+  private readonly capabilities: readonly string[];
   private published: { sessionId: string; at: number } | null = null;
   private hasSweptDeadRecords = false;
 
@@ -232,6 +237,7 @@ export class ServingHeartbeatStore
     this.now = deps.now ?? Date.now;
     this.pid = deps.pid ?? process.pid;
     this.isProcessAlive = deps.isProcessAlive ?? isRunningProcess;
+    this.capabilities = Object.freeze([...(deps.capabilities ?? [])]);
   }
 
   /** Publish (or refresh) `sessionId`'s heartbeat. Throttled; never throws. */
@@ -257,6 +263,7 @@ export class ServingHeartbeatStore
       sessionId,
       pid: this.pid,
       updatedAt: at,
+      capabilities: this.capabilities,
     };
     try {
       writeJsonFileAtomic(
@@ -293,6 +300,16 @@ export class ServingHeartbeatStore
       servingHeartbeatPath(this.forwardingDir, sessionId),
     );
     return record === null ? "absent" : this.classify(record);
+  }
+
+  /** Return one live heartbeat record, retaining its advertised capabilities. */
+  getLiveHeartbeat(sessionId: string): ServingHeartbeat | null {
+    const record = this.readRecord(
+      servingHeartbeatPath(this.forwardingDir, sessionId),
+    );
+    return record && this.classify(record) === "alive"
+      ? Object.freeze({ ...record, capabilities: [...record.capabilities] })
+      : null;
   }
 
   /** Every session whose record reads as alive. */
@@ -359,7 +376,7 @@ export class ServingHeartbeatStore
   }
 
   /**
-   * Read a record, or `null` when it is missing or unusable.
+   * Read a record, or `null` when missing, unusable, or stored under another identity's path.
    *
    * Silent by design: a forwarding child calls this on every poll tick, so a
    * warning per unreadable read would flood the review log at four lines a
@@ -368,7 +385,13 @@ export class ServingHeartbeatStore
    */
   private readRecord(path: string): ServingHeartbeat | null {
     try {
-      return asServingHeartbeat(JSON.parse(readFileSync(path, "utf-8")));
+      const record = asServingHeartbeat(
+        JSON.parse(readFileSync(path, "utf-8")),
+      );
+      return record &&
+        servingHeartbeatPath(this.forwardingDir, record.sessionId) === path
+        ? record
+        : null;
     } catch {
       return null;
     }
@@ -421,7 +444,12 @@ function asServingHeartbeat(value: unknown): ServingHeartbeat | null {
     !Number.isInteger(candidate.pid) ||
     candidate.pid <= 0 ||
     typeof candidate.updatedAt !== "number" ||
-    !Number.isFinite(candidate.updatedAt)
+    !Number.isFinite(candidate.updatedAt) ||
+    (candidate.capabilities !== undefined &&
+      (!Array.isArray(candidate.capabilities) ||
+        !candidate.capabilities.every(
+          (capability) => typeof capability === "string",
+        )))
   ) {
     return null;
   }
@@ -429,6 +457,7 @@ function asServingHeartbeat(value: unknown): ServingHeartbeat | null {
     sessionId: candidate.sessionId,
     pid: candidate.pid,
     updatedAt: candidate.updatedAt,
+    capabilities: candidate.capabilities ?? [],
   };
 }
 

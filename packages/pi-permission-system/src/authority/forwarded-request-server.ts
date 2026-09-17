@@ -34,6 +34,14 @@ import type { SessionApprovalRecorder } from "#src/session-approval-recorder";
 import type { DebugReviewLogger } from "#src/session-logger";
 import type { PermissionCheckResult } from "#src/types";
 import type { AskEscalator } from "./authorizer-selection";
+import type { DelegationControlServer } from "./delegation-control";
+import {
+  cancelledPermissionDecision,
+  type DelegatedRequest,
+  delegatedTerminalPath,
+  publishDelegatedTerminal,
+  readDelegatedTerminal,
+} from "./forwarded-transaction";
 import {
   cleanupPermissionForwardingLocationIfEmpty,
   ensureDirectoryExists,
@@ -50,14 +58,15 @@ import type { PromptPermissionDetails } from "./permission-prompter";
 
 /**
  * Narrow seam describing what `ForwardingManager` needs from the server: a
- * single method that drains this session's forwarded-permission inbox.
+ * inbox drain and pending-request liveness checks.
  *
  * Depending on the interface (not the concrete `ForwardedRequestServer`)
  * keeps the manager's unit tests free of casts — they inject a plain
- * `{ processInbox: vi.fn() }` mock.
+ * `{ processInbox: vi.fn(), checkPending: vi.fn() }` mock.
  */
 export interface InboxProcessor {
-  processInbox(ctx: ForwarderContext): Promise<void>;
+  processInbox(ctx: ForwarderContext, signal?: AbortSignal): Promise<void>;
+  checkPending(): void;
 }
 
 /**
@@ -119,11 +128,11 @@ async function resolveBeforeDeadline(
   deadline: ForwardingDeadline,
 ): Promise<PermissionPromptDecision> {
   if (deadline.signal.aborted) {
-    return FORWARDED_PERMISSION_TIMEOUT_DECISION;
+    return cancelledPermissionDecision(deadline);
   }
   let onAbort: (() => void) | undefined;
   const expired = new Promise<PermissionPromptDecision>((resolve) => {
-    onAbort = () => resolve(FORWARDED_PERMISSION_TIMEOUT_DECISION);
+    onAbort = () => resolve(cancelledPermissionDecision(deadline));
     deadline.signal.addEventListener("abort", onAbort, { once: true });
   });
   try {
@@ -158,6 +167,7 @@ export interface ForwardedRequestServerDeps {
   recorder: SessionApprovalRecorder;
   /** In-process subagent registry, read only by the one-hop canary. */
   registry?: SubagentSessionRegistry;
+  delegationControl?: Pick<DelegationControlServer, "isBindingLive">;
 }
 
 // ── Module-private helpers ────────────────────────────────────────────────
@@ -190,7 +200,9 @@ function buildForwardedAskDetails(
       requesterAgentName: request.requesterAgentName || null,
       requesterSessionId: request.requesterSessionId || null,
     },
-    ...(forwardingDeadline ? { forwardingDeadline } : {}),
+    ...(forwardingDeadline
+      ? { forwardingDeadline, requestSignal: forwardingDeadline.signal }
+      : {}),
     // Carries the child's suggestion so LocalUserAuthorizer can offer the
     // whole-session grant scope; absent for a legacy/version-skew request.
     ...(request.sessionApproval
@@ -306,6 +318,15 @@ export class ForwardedRequestServer implements InboxProcessor {
   private readonly broadcaster: DecisionBroadcaster;
   private readonly recorder: SessionApprovalRecorder;
   private readonly registry: SubagentSessionRegistry | undefined;
+  private readonly delegationControl: ForwardedRequestServerDeps["delegationControl"];
+  private readonly pending = new Map<
+    string,
+    {
+      request: DelegatedRequest;
+      requestPath: string;
+      controller: AbortController;
+    }
+  >();
 
   constructor(deps: ForwardedRequestServerDeps) {
     this.forwardingDir = deps.forwardingDir;
@@ -315,10 +336,35 @@ export class ForwardedRequestServer implements InboxProcessor {
     this.broadcaster = deps.broadcaster;
     this.recorder = deps.recorder;
     this.registry = deps.registry;
+    this.delegationControl = deps.delegationControl;
+  }
+
+  /** Runs even while the serial inbox drain is awaiting a human. */
+  checkPending(): void {
+    for (const [terminalPath, pending] of this.pending) {
+      if (
+        !this.isDelegatedRequestLive(pending.request) ||
+        !existsSync(pending.requestPath) ||
+        existsSync(terminalPath)
+      )
+        pending.controller.abort();
+    }
+  }
+
+  private isDelegatedRequestLive(request: DelegatedRequest): boolean {
+    return (
+      this.delegationControl?.isBindingLive(
+        request.delegation.delegationId,
+        request.delegation.identity,
+      ) === true
+    );
   }
 
   /** Drain and respond to this session's forwarded-permission inbox. */
-  async processInbox(ctx: ForwarderContext): Promise<void> {
+  async processInbox(
+    ctx: ForwarderContext,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const currentSessionId = getSessionId(ctx);
     const location = getExistingPermissionForwardingLocation(
       this.forwardingDir,
@@ -348,9 +394,10 @@ export class ForwardedRequestServer implements InboxProcessor {
     }
 
     for (const fileName of requestFiles) {
+      if (signal?.aborted) break;
       const requestPath = join(location.requestsDir, fileName);
       const request = readForwardedPermissionRequest(this.logger, requestPath);
-      if (!request) {
+      if (!request || fileName !== `${request.id}.json`) {
         safeDeleteFile(
           this.logger,
           requestPath,
@@ -364,6 +411,7 @@ export class ForwardedRequestServer implements InboxProcessor {
         location,
         requestPath,
         currentSessionId,
+        signal,
       );
     }
 
@@ -377,6 +425,7 @@ export class ForwardedRequestServer implements InboxProcessor {
     location: PermissionForwardingLocation,
     requestPath: string,
     currentSessionId: string,
+    signal?: AbortSignal,
   ): Promise<void> {
     if (!isForwardedPermissionRequestForSession(request, currentSessionId)) {
       logPermissionForwardingWarning(
@@ -387,6 +436,19 @@ export class ForwardedRequestServer implements InboxProcessor {
         this.logger,
         requestPath,
         `${location.label} forwarded permission request`,
+      );
+      return;
+    }
+
+    if (request.delegation && request.expiresAt !== undefined) {
+      await this.processDelegatedRequest(
+        {
+          ...request,
+          delegation: request.delegation,
+          expiresAt: request.expiresAt,
+        },
+        requestPath,
+        signal,
       );
       return;
     }
@@ -444,7 +506,9 @@ export class ForwardedRequestServer implements InboxProcessor {
       const decision = this.guardDecision(
         request,
         requestPath,
-        resolved.decision,
+        signal?.aborted
+          ? cancelledPermissionDecision(deadline?.deadline)
+          : resolved.decision,
         deadline?.deadline,
       );
       const responseDecision = this.applyGrantScope(
@@ -469,6 +533,102 @@ export class ForwardedRequestServer implements InboxProcessor {
     }
   }
 
+  private async processDelegatedRequest(
+    request: DelegatedRequest,
+    requestPath: string,
+    drainSignal?: AbortSignal,
+  ): Promise<void> {
+    const terminalPath = delegatedTerminalPath(this.forwardingDir, request);
+    if (this.pending.has(terminalPath)) return;
+    const controller = new AbortController();
+    const deadline = startDeadline(request.expiresAt);
+    const signal = AbortSignal.any([
+      controller.signal,
+      deadline.deadline.signal,
+      ...(drainSignal ? [drainSignal] : []),
+    ]);
+    const lifetime = { signal, expiresAt: request.expiresAt };
+    const publishUnavailable = () => {
+      try {
+        publishDelegatedTerminal(
+          terminalPath,
+          request,
+          cancelledPermissionDecision(lifetime),
+        );
+      } catch (error) {
+        logPermissionForwardingError(
+          this.logger,
+          "Delegated cancellation could not settle",
+          error,
+        );
+      }
+    };
+    this.pending.set(terminalPath, { request, requestPath, controller });
+    signal.addEventListener("abort", publishUnavailable, { once: true });
+    try {
+      if (!this.isDelegatedRequestLive(request) || !existsSync(requestPath))
+        controller.abort();
+      if (signal.aborted) {
+        publishUnavailable();
+        return;
+      }
+      if (readDelegatedTerminal(terminalPath, request)) return;
+      const resolved = await this.resolveDecision(
+        request,
+        {
+          requestId: request.id,
+          delegationId: request.delegation.delegationId,
+        },
+        lifetime,
+      );
+      // No await between fresh liveness checks, first terminal publication and grant application.
+      if (!this.isDelegatedRequestLive(request) || !existsSync(requestPath))
+        controller.abort();
+      const candidate =
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- Mutable AbortSignal after awaited escalation and fresh liveness checks.
+        signal.aborted || isForwardingDeadlineExpired(lifetime)
+          ? cancelledPermissionDecision(lifetime)
+          : resolved.decision;
+      const response =
+        candidate.state === "approved_for_serving_session" && candidate.approved
+          ? { ...candidate, state: "approved" as const }
+          : candidate;
+      const won = publishDelegatedTerminal(terminalPath, request, response);
+      if (won) {
+        this.applyGrantScope(request, candidate, {
+          requestId: request.id,
+          delegationId: request.delegation.delegationId,
+        });
+      }
+      const committed = won
+        ? candidate
+        : readDelegatedTerminal(terminalPath, request);
+      if (resolved.details && committed)
+        this.broadcaster.emitDecision(
+          buildServedDecisionEvent(resolved.details, committed),
+        );
+      this.logger.review("forwarded_permission.settled", {
+        requestId: request.id,
+        delegationId: request.delegation.delegationId,
+        committedHere: won,
+        decidedBy: committed?.decidedBy,
+        state: committed?.state,
+      });
+    } catch (error) {
+      controller.abort();
+      logPermissionForwardingError(
+        this.logger,
+        "Delegated permission settlement failed",
+        error,
+      );
+    } finally {
+      signal.removeEventListener("abort", publishUnavailable);
+      deadline.dispose();
+      this.pending.delete(terminalPath);
+      safeDeleteFile(this.logger, requestPath, "delegated permission request");
+    }
+  }
+
   private guardDecision(
     request: ForwardedPermissionRequest,
     requestPath: string,
@@ -482,7 +642,7 @@ export class ForwardedRequestServer implements InboxProcessor {
     if (expired) {
       return FORWARDED_PERMISSION_TIMEOUT_DECISION;
     }
-    return existsSync(requestPath)
+    return existsSync(requestPath) && !deadline?.signal.aborted
       ? decision
       : createUnavailablePermissionDecision(
           "The forwarded permission requester is no longer waiting",

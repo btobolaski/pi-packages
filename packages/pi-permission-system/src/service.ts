@@ -4,14 +4,23 @@
  * `Symbol.for()` is process-global by spec, so it survives jiti's per-extension
  * module isolation (`moduleCache: false`). A consumer doing
  * `import("@gotgenes/pi-permission-system")` gets a fresh module copy, but
- * `getPermissionsService()` reads from the same `globalThis` slot the provider
- * wrote to — enabling direct, synchronous, type-safe function calls.
+ * `getPermissionsService(sessionId)` reads from the same `globalThis` map the
+ * provider wrote to — enabling direct, synchronous, type-safe function calls.
  *
- * Best practice: call `getPermissionsService()` per use rather than caching the
- * reference — this ensures resilience across `/reload` and load-order edge cases.
+ * For queries, resolve `getPermissionsService(ctx.sessionManager.getSessionId())`
+ * per use; the no-argument overload deliberately selects the parent/default.
+ * Before publication either may be undefined. Registrations must reconcile at
+ * session_start and permissions:ready, disposing old registrations on reload.
  */
 
 import type { Authorizer } from "./authority/authorizer";
+import type {
+  DelegationIdentity,
+  DelegationReady,
+  DelegationState,
+  PendingDelegatedWait,
+} from "./authority/permission-delegation";
+import { hasDelegationCloser } from "./authority/permission-delegation";
 import type { ToolAccessExtractor } from "./tool-access-extractor-registry";
 import type { ToolInputFormatter } from "./tool-input-formatter-registry";
 import type { PermissionCheckResult, PermissionState } from "./types";
@@ -36,6 +45,12 @@ export interface AuthorizerLog {
   review(event: string, details?: Record<string, unknown>): void;
   debug(event: string, details?: Record<string, unknown>): void;
 }
+export type {
+  DelegationIdentity,
+  DelegationReady,
+  DelegationState,
+  PendingDelegatedWait,
+} from "./authority/permission-delegation";
 export type { PromptPermissionDetails } from "./authority/permission-prompter";
 export type {
   ForwardedPromptContext,
@@ -179,48 +194,117 @@ export interface PermissionsService extends PermissionQuery {
     name: string,
     authorize: Authorizer["authorize"],
   ): () => void;
+
+  /** Establish the required parent binding before the child can use its tools. */
+  connectDelegation(
+    identity: DelegationIdentity,
+    options?: { signal?: AbortSignal },
+  ): Promise<DelegationReady>;
+
+  /** Read the current binding lifecycle; it grants no tool permission. */
+  getDelegationState(): DelegationState;
+
+  /** Observe immutable wait snapshots, immediately and on change. No decision authority. */
+  subscribeDelegatedWaits(
+    listener: (pending: readonly PendingDelegatedWait[]) => void,
+  ): () => void;
+}
+
+// A separate process-global key keeps legacy publication distinct from every
+// literal session ID, even when different module copies publish into one map.
+const LEGACY_DEFAULT_KEY = Symbol.for(
+  "@gotgenes/pi-permission-system:legacy-default",
+);
+
+type ServiceKey = string | typeof LEGACY_DEFAULT_KEY;
+
+interface PublishedServices {
+  services: Map<ServiceKey, PermissionsService>;
+  defaultKey?: ServiceKey;
+}
+
+function isPublishedServices(value: unknown): value is PublishedServices {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "services" in value &&
+    (value as { services?: object }).services instanceof Map
+  );
+}
+
+function getPublishedServices(): PublishedServices {
+  const global = globalThis as Record<symbol, unknown>;
+  const current = global[SERVICE_KEY];
+  if (isPublishedServices(current)) {
+    return current;
+  }
+  const services: PublishedServices = { services: new Map() };
+  global[SERVICE_KEY] = services;
+  return services;
 }
 
 /**
- * Store a `PermissionsService` on `globalThis` so other extensions can
- * retrieve it via `getPermissionsService()`.
- *
- * Called at `session_start` by the top-level (parent) instance only — an
- * in-process subagent child skips publishing so it cannot clobber the parent's
- * service. Overwrites any previously published service, which keeps `/reload`
- * working: a reloaded parent re-publishes its fresh service.
+ * Store a service under its exact session id. The optional legacy form remains
+ * for consumers compiled before exact-session access existed.
  */
-export function publishPermissionsService(service: PermissionsService): void {
-  (globalThis as Record<symbol, unknown>)[SERVICE_KEY] = service;
+export function publishPermissionsService(
+  service: PermissionsService,
+  sessionId?: string,
+  options?: { asDefault?: boolean },
+): void {
+  const published = getPublishedServices();
+  const key = sessionId ?? LEGACY_DEFAULT_KEY;
+  const previous = published.services.get(key);
+  if (previous && previous !== service && hasDelegationCloser(previous)) {
+    previous.closeDelegation();
+  }
+  published.services.set(key, service);
+  if (options?.asDefault ?? true) {
+    published.defaultKey = key;
+  }
 }
 
 /**
- * Retrieve the published `PermissionsService`, or `undefined` if the
- * permission-system extension has not loaded (or has been unloaded).
+ * Retrieve a service for `sessionId`, or the currently published parent service
+ * when no session id is supplied.
  */
-export function getPermissionsService(): PermissionsService | undefined {
-  return (globalThis as Record<symbol, unknown>)[SERVICE_KEY] as
-    | PermissionsService
-    | undefined;
+export function getPermissionsService(
+  sessionId?: string,
+): PermissionsService | undefined {
+  const global = globalThis as Record<symbol, unknown>;
+  const current = global[SERVICE_KEY];
+  if (!isPublishedServices(current)) {
+    return undefined;
+  }
+  const published = current;
+  const key = sessionId ?? published.defaultKey;
+  return key === undefined ? undefined : published.services.get(key);
 }
 
 /**
- * Remove `service` from `globalThis`, but only when the current slot still
- * holds it (identity compare-and-delete).
- *
- * Called during `session_shutdown` to avoid stale references after the
- * extension is torn down. Scoping the delete to the publishing instance keeps
- * two cases correct:
- *
- * - An in-process subagent child never published the parent's service, so its
- *   shutdown is a no-op and the parent's slot survives.
- * - A superseded `/reload` generation no longer owns the slot, so its late
- *   shutdown cannot wipe the new generation's freshly published service.
+ * Remove only entries still owned by `service`, preserving replacements that
+ * reloaded under the same session id.
  */
 export function unpublishPermissionsService(service: PermissionsService): void {
-  if (getPermissionsService() !== service) {
+  const global = globalThis as Record<symbol, unknown>;
+  const current = global[SERVICE_KEY];
+  if (!isPublishedServices(current)) {
     return;
   }
-  // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- Symbol-keyed global property; Map.delete() is not applicable
-  delete (globalThis as Record<symbol, unknown>)[SERVICE_KEY];
+  const published = current;
+  for (const [key, publishedService] of published.services) {
+    if (publishedService === service) {
+      published.services.delete(key);
+    }
+  }
+  if (
+    published.defaultKey !== undefined &&
+    published.services.get(published.defaultKey) === undefined
+  ) {
+    published.defaultKey = undefined;
+  }
+  if (published.services.size === 0) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- Symbol-keyed global property; the empty global slot must be removed.
+    delete global[SERVICE_KEY];
+  }
 }

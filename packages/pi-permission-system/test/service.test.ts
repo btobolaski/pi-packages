@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccessIntent } from "#src/access-intent/access-intent";
 import { AuthorizerRegistry } from "#src/authority/authorizer-registry";
+import { PermissionDelegation } from "#src/authority/permission-delegation";
 import { posixPathFlavor } from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 import { LocalPermissionsService } from "#src/permissions-service";
@@ -10,9 +11,11 @@ import {
   publishPermissionsService,
   unpublishPermissionsService,
 } from "#src/service";
+import { PermissionServiceLifecycle } from "#src/service-lifecycle";
 import { ToolAccessExtractorRegistry } from "#src/tool-access-extractor-registry";
 import { ToolInputFormatterRegistry } from "#src/tool-input-formatter-registry";
 import type { PermissionCheckResult, PermissionState } from "#src/types";
+import { makeCtx } from "#test/helpers/handler-fixtures";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -25,6 +28,9 @@ function makeService(
     registerToolInputFormatter: vi.fn(),
     registerToolAccessExtractor: vi.fn(),
     registerAuthorizer: vi.fn(),
+    connectDelegation: vi.fn(),
+    subscribeDelegatedWaits: vi.fn().mockReturnValue(() => {}),
+    getDelegationState: vi.fn().mockReturnValue({ status: "not-required" }),
     ...overrides,
   };
 }
@@ -32,11 +38,18 @@ function makeService(
 // ── globalThis accessor ────────────────────────────────────────────────────
 
 describe("globalThis accessor", () => {
+  const created = new Set<PermissionsService>();
+  function trackedService() {
+    const service = { ...makeService(), closeDelegation: vi.fn() };
+    created.add(service);
+    return service;
+  }
+
   afterEach(() => {
     const current = getPermissionsService();
-    if (current) {
-      unpublishPermissionsService(current);
-    }
+    if (current) unpublishPermissionsService(current);
+    for (const service of created) unpublishPermissionsService(service);
+    created.clear();
   });
 
   it("returns undefined when nothing has been published", () => {
@@ -78,6 +91,152 @@ describe("globalThis accessor", () => {
     expect(() => unpublishPermissionsService(makeService())).not.toThrow();
     expect(getPermissionsService()).toBeUndefined();
   });
+
+  it("keeps child services exact-session-only without replacing the parent default", () => {
+    const parent = makeService();
+    const child = makeService();
+    publishPermissionsService(parent, "parent");
+    publishPermissionsService(child, "child", { asDefault: false });
+
+    expect(getPermissionsService()).toBe(parent);
+    expect(getPermissionsService("parent")).toBe(parent);
+    expect(getPermissionsService("child")).toBe(child);
+
+    unpublishPermissionsService(child);
+    expect(getPermissionsService()).toBe(parent);
+    expect(getPermissionsService("child")).toBeUndefined();
+  });
+
+  it.each([
+    "legacy first",
+    "literal first",
+  ])("keeps legacy and literal default independent when publishing %s", (order) => {
+    const parent = trackedService();
+    const child = trackedService();
+    if (order === "legacy first") publishPermissionsService(parent);
+    publishPermissionsService(child, "__default__", { asDefault: false });
+    if (order === "literal first") publishPermissionsService(parent);
+    expect(getPermissionsService()).toBe(parent);
+    expect(getPermissionsService("__default__")).toBe(child);
+    expect(parent.closeDelegation).not.toHaveBeenCalled();
+    expect(child.closeDelegation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "literal session",
+    "legacy default",
+  ])("removes only the %s without promoting another default", (removed) => {
+    const parent = trackedService();
+    const child = trackedService();
+    publishPermissionsService(parent);
+    publishPermissionsService(child, "__default__", { asDefault: false });
+    unpublishPermissionsService(removed === "literal session" ? child : parent);
+    expect(getPermissionsService()).toBe(
+      removed === "literal session" ? parent : undefined,
+    );
+    expect(getPermissionsService("__default__")).toBe(
+      removed === "legacy default" ? child : undefined,
+    );
+  });
+
+  it("resolves an explicitly published empty session ID without selecting a default", () => {
+    const service = trackedService();
+    publishPermissionsService(service, "", { asDefault: false });
+    expect(getPermissionsService("")).toBe(service);
+    expect(getPermissionsService()).toBeUndefined();
+  });
+
+  it("replaces the legacy default across fresh module copies without touching the literal session", async () => {
+    const oldParent = trackedService();
+    const replacement = trackedService();
+    const child = trackedService();
+    publishPermissionsService(oldParent);
+    publishPermissionsService(child, "__default__", { asDefault: false });
+    vi.resetModules();
+    const fresh = await import("#src/service");
+    fresh.publishPermissionsService(replacement);
+    expect(oldParent.closeDelegation).toHaveBeenCalledOnce();
+    expect(child.closeDelegation).not.toHaveBeenCalled();
+    expect(getPermissionsService()).toBe(replacement);
+    expect(fresh.getPermissionsService()).toBe(replacement);
+    expect(getPermissionsService("__default__")).toBe(child);
+    expect(fresh.getPermissionsService("__default__")).toBe(child);
+    unpublishPermissionsService(oldParent);
+    expect(fresh.getPermissionsService()).toBe(replacement);
+  });
+
+  it("selects a named default without retiring the legacy service", () => {
+    const legacy = trackedService();
+    const named = trackedService();
+    publishPermissionsService(legacy);
+    publishPermissionsService(named, "__default__");
+    expect(getPermissionsService()).toBe(named);
+    expect(getPermissionsService("__default__")).toBe(named);
+    expect(legacy.closeDelegation).not.toHaveBeenCalled();
+    unpublishPermissionsService(named);
+    expect(getPermissionsService()).toBeUndefined();
+    expect(getPermissionsService("__default__")).toBeUndefined();
+  });
+
+  it("does not retire a service republished at the same key", () => {
+    const legacy = trackedService();
+    const named = trackedService();
+    publishPermissionsService(legacy);
+    publishPermissionsService(named, "__default__");
+    publishPermissionsService(named, "__default__");
+    expect(getPermissionsService()).toBe(named);
+    expect(named.closeDelegation).not.toHaveBeenCalled();
+    expect(legacy.closeDelegation).not.toHaveBeenCalled();
+  });
+
+  it("removes every key owned by the same service", () => {
+    const shared = trackedService();
+    publishPermissionsService(shared);
+    publishPermissionsService(shared, "__default__", { asDefault: false });
+    unpublishPermissionsService(shared);
+    expect(getPermissionsService()).toBeUndefined();
+    expect(getPermissionsService("__default__")).toBeUndefined();
+  });
+
+  it("retires a prepared predecessor once before replacement publication", () => {
+    const oldService = { ...makeService(), closeDelegation: vi.fn() };
+    const replacement = makeService();
+    const ctx = makeCtx();
+    publishPermissionsService(oldService, "session-test");
+    const lifecycle = new PermissionServiceLifecycle(
+      replacement,
+      { isRegisteredChild: () => false },
+      { emit: vi.fn(), on: vi.fn() },
+      [],
+    );
+    lifecycle.prepare(ctx);
+    expect(oldService.closeDelegation).toHaveBeenCalledOnce();
+    expect(getPermissionsService("session-test")).toBeUndefined();
+    lifecycle.activate(ctx);
+    expect(oldService.closeDelegation).toHaveBeenCalledOnce();
+    expect(getPermissionsService("session-test")).toBe(replacement);
+  });
+
+  it("does not let a replaced instance remove its successor", () => {
+    const oldService = makeService();
+    const replacement = makeService();
+    publishPermissionsService(oldService, "parent");
+    publishPermissionsService(replacement, "parent");
+
+    unpublishPermissionsService(oldService);
+    expect(getPermissionsService()).toBe(replacement);
+    expect(getPermissionsService("parent")).toBe(replacement);
+  });
+
+  it("shares exact-session services across fresh module copies", async () => {
+    const service = makeService();
+    publishPermissionsService(service, "parent");
+
+    vi.resetModules();
+    const freshServiceModule = await import("#src/service");
+    expect(freshServiceModule.getPermissionsService("parent")).toBe(service);
+    freshServiceModule.unpublishPermissionsService(service);
+  });
 });
 
 // ── service adapter delegation ─────────────────────────────────────────────
@@ -116,10 +275,22 @@ describe("service round-trip through the global slot", () => {
         {
           getPathNormalizer: () =>
             new PathNormalizer(posixPathFlavor, "/test/project"),
+          deactivate: vi.fn(),
         },
         new ToolInputFormatterRegistry(),
         new ToolAccessExtractorRegistry(),
         new AuthorizerRegistry(),
+        new PermissionDelegation(
+          { getContext: () => null, canonicalizeCwd: (value) => value },
+          {
+            connect: vi.fn(),
+            discardBinding: vi.fn(),
+            isBindingLive: () => true,
+            getBindingSignal: () => undefined,
+            close: vi.fn(),
+          },
+          false,
+        ),
       ),
     );
   }

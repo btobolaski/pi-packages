@@ -155,7 +155,8 @@ export class ToolCallGatePipeline {
           ];
 
     for (const produce of gateProducers) {
-      const outcome = await runner.run(await produce(), tcc.agentName);
+      const gate = await produce();
+      const outcome = await runner.run(gate, tcc.agentName, tcc.lifetime);
       if (outcome.action === "block") {
         return outcome;
       }

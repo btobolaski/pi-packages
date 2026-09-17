@@ -52,7 +52,7 @@ export type PermissionUiPromptSource =
   | "skill_input"
   | "skill_read";
 
-/** Forwarding context, present only when a prompt was forwarded from a non-UI subagent. */
+/** Forwarding context for legacy headless or explicitly delegated interactive children. */
 export interface ForwardedPromptContext {
   /** Requesting subagent's display name, when known. */
   requesterAgentName: string | null;

@@ -272,7 +272,9 @@ A hook denial therefore remains authoritative when the user previously approved 
 
 ## Subagent Behavior
 
-A child runs its own hook before forwarding.
+An ordinary child runs its own hook before forwarding.
+For an [explicitly delegated interactive child](subagent-integration.md#explicit-interactive-delegation), the required-delegation readiness gate runs first: an unbound or unavailable child is blocked before its hook can allow a call.
+Once ready, the child runs its own hook before forwarding.
 The hook input carries the child's session ID, working directory, transcript path, tool name, and raw tool input.
 When the child hook asks or defers, the final dialog request is forwarded to the serving parent.
 The parent does not rerun the hook or consult `authorizerChain`.

@@ -1,8 +1,9 @@
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   createPermissionForwardingLocation,
+  encodeSessionIdForPath,
   isForwardedPermissionRequestForSession,
   resolvePermissionForwardingTarget,
   SUBAGENT_PARENT_SESSION_ENV_CANDIDATES,
@@ -12,6 +13,46 @@ import { makeSubagentRegistry } from "#test/helpers/forwarding-fixtures";
 
 afterEach(() => {
   vi.unstubAllEnvs();
+});
+
+describe("session path encoding", () => {
+  test.each([
+    [".", "%2E"],
+    ["..", "%2E%2E"],
+    ["parent", "parent"],
+    ["a.b", "a.b"],
+    ["a..b", "a..b"],
+    ["a/b", "a%2Fb"],
+    ["%", "%25"],
+    ["%2E", "%252E"],
+    ["%2E%2E", "%252E%252E"],
+  ])("encodes %j as the literal component %j", (id, expected) => {
+    const encoded = encodeSessionIdForPath(id);
+    expect(encoded).toBe(expected);
+    expect(dirname(join("sessions", encoded))).toBe("sessions");
+  });
+
+  test.each([
+    [".", "%2E"],
+    ["..", "%2E%2E"],
+  ])("isolates a whitespace-padded legacy session %j", (id, encoded) => {
+    const root = join(tmpdir(), "forwarding-root");
+    const location = createPermissionForwardingLocation(root, ` \t${id}\n `);
+    const sessionRootDir = join(root, "sessions", encoded);
+    expect(location).toEqual({
+      sessionId: id,
+      sessionRootDir,
+      requestsDir: join(sessionRootDir, "requests"),
+      responsesDir: join(sessionRootDir, "responses"),
+      label: "primary",
+    });
+    expect(location.sessionRootDir).not.toBe(
+      createPermissionForwardingLocation(root, encoded).sessionRootDir,
+    );
+    expect(
+      isForwardedPermissionRequestForSession({ targetSessionId: id }, encoded),
+    ).toBe(false);
+  });
 });
 
 describe("SUBAGENT_PARENT_SESSION_ENV_CANDIDATES", () => {

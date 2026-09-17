@@ -18,12 +18,15 @@ It provides direct, synchronous, type-safe function calls.
 
 ### Quick Start
 
+Inside a tool or command handler after startup, use its current `ctx` to query the exact session.
+Before publication the accessor returns `undefined`; startup consumers must use the [load-order-safe wiring](#end-to-end-wiring) below rather than a factory-only lookup.
+
 ```typescript
 try {
   const { getPermissionsService } = await import(
     "@gotgenes/pi-permission-system"
   );
-  const permissions = getPermissionsService();
+  const permissions = getPermissionsService(ctx.sessionManager.getSessionId());
   if (permissions) {
     const result = permissions.checkPermission("bash", "git push");
     console.log(result.state); // "allow" | "deny" | "ask"
@@ -38,17 +41,74 @@ try {
 Pi's extension loader creates a fresh [jiti](https://github.com/nicolo-ribaudo/jiti) instance per extension with `moduleCache: false`, which isolates module-level state.
 `Symbol.for()` and `globalThis` are process-global by spec, so they survive this isolation.
 
-The permission-system extension publishes a service object on `globalThis` via `Symbol.for("@gotgenes/pi-permission-system:service")` at `session_start`.
-Consumers call `getPermissionsService()` to retrieve it — even though their `import()` loads a fresh module copy, the accessor reads from the shared `globalThis` slot.
-An in-process subagent child does not publish its own service; inside a child, `getPermissionsService()` resolves the parent's service.
-A consumer reacting to the `permissions:ready` broadcast (also emitted at `session_start`, after the publish) can resolve the service immediately.
+At `session_start`, every permission-system instance publishes its service in a session-keyed map on `globalThis` via `Symbol.for("@gotgenes/pi-permission-system:service")`.
+`getPermissionsService(sessionId)` returns only that session's service, or `undefined`; use this overload to configure an interactive child's delegation.
+`getPermissionsService()` preserves the parent/default accessor: registered children and required delegates do not replace its selection.
+Even when `import()` loads a fresh module copy, both overloads read the same map.
+Replacement and teardown are identity-checked, so a retired instance cannot unpublish its replacement.
+A consumer with the current session ID can resolve that service after its `permissions:ready` broadcast, emitted at `session_start` after publication.
+The event also fires for children whose service never becomes the no-argument default; it does not mean delegated routing is ready.
 
 All types below are directly importable and type-check with `tsc` out of the box.
 `@gotgenes/pi-permission-system`'s published `exports` resolve `import type { … }` to a self-contained, bundled declaration file with no internal module references, so a downstream `tsconfig.json` needs no special path configuration.
 
+### Interactive delegation lifecycle
+
+These service operations manage an explicitly required child's lifecycle; they do not make permission decisions.
+Existing callers of query/registration methods remain supported, but implementations and test doubles of the full `PermissionsService` interface must now provide all three required delegation methods.
+They are not optional; feature detection in an adapter handles an unavailable capability, not mixed-version service-slot or delegated-runtime interoperability.
+
+```typescript
+interface DelegationIdentity {
+  parentSessionId: string;
+  childSessionId: string;
+  agentName: string;
+  childCwd: string;
+}
+
+interface DelegationReady {
+  capability: "interactive-delegation-v1";
+  delegationId: string;
+  parentSessionId: string;
+  childSessionId: string;
+}
+
+interface PendingDelegatedWait {
+  readonly delegationId: string;
+  readonly childSessionId: string;
+  readonly requestId: string;
+}
+
+// Additions to PermissionsService:
+interface DelegationService {
+  connectDelegation(
+    identity: DelegationIdentity,
+    options?: { signal?: AbortSignal },
+  ): Promise<DelegationReady>;
+  getDelegationState(): DelegationState;
+  subscribeDelegatedWaits(
+    listener: (pending: readonly PendingDelegatedWait[]) => void,
+  ): () => void;
+}
+```
+
+`DelegationService` above is illustrative; the exported interface is `PermissionsService`.
+`DelegationIdentity`, `DelegationReady`, `DelegationState`, and `PendingDelegatedWait` are named package exports.
+The lifecycle states are `not-required`, `unbound`, `connecting`, `ready`, `unavailable`, and `closed`.
+Failure codes are `not_required`, `invalid_identity`, `conflicting_identity`, `unavailable`, `cancelled`, and `closed`.
+State snapshots are frozen; both ready and unavailable states retain the validated identity and delegation ID.
+
+The subscription immediately returns an immutable snapshot through the listener and then reports each pending-set change.
+It carries no raw inputs, human reasons, or decision callbacks.
+Unsubscribing has no authority over a request.
+No lifecycle operation accepts a verdict or records a grant.
+
+See [explicit interactive delegation](subagent-integration.md#explicit-interactive-delegation) for the required environment marker, load-order-safe startup, cancellation ordering, and reload recipe.
+Do not await a later extension's `session_start` handler from your own handler, and do not treat `permissions:ready` as a completed delegation handshake.
+
 ### API
 
-The `PermissionsService` interface:
+The existing query/registration methods remain available (excerpt; the full interface also includes authorizer registration and the required delegation operations above):
 
 ```typescript
 interface PermissionsService {
@@ -182,46 +242,63 @@ Guard your own parsing and return `undefined` on anything unexpected.
 
 ##### End-to-end wiring
 
-Register during your extension's initialization and store the disposer for teardown:
+Listen during factory setup and also try from your own `session_start`.
+Either provider/consumer handler order works: a ready event before the consumer has a context is recovered by its startup lookup, and a consumer starting first retries when the provider publishes.
+The lookup happens after the asynchronous import, so delayed imports cannot install registrations after shutdown or against a cached superseded service.
 
 ```typescript
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { PermissionsService } from "@gotgenes/pi-permission-system";
+
 export default function myExtension(pi: ExtensionAPI): void {
+  let sessionId: string | undefined;
+  let current: PermissionsService | undefined;
   let disposeFormatter: (() => void) | undefined;
+  let stopped = false;
+  const provider = import("@gotgenes/pi-permission-system").catch(() => undefined);
 
-  void (async () => {
-    try {
-      const { getPermissionsService } = await import(
-        "@gotgenes/pi-permission-system"
-      );
-      const permissions = getPermissionsService();
-      disposeFormatter = permissions?.registerToolInputFormatter(
-        "deploy", // a tool THIS extension registers with Pi
-        (input) => {
-          const target =
-            typeof input.target === "string" ? input.target : undefined;
-          const services = Array.isArray(input.services)
-            ? input.services.length
-            : undefined;
-          if (!target) return undefined; // decline → default preview
-          return services !== undefined
-            ? `with target ${target} (${services} services)`
-            : `with target ${target}`;
-        },
-      );
-    } catch {
-      // permission-system not installed — nothing to register
-    }
-  })();
+  function register(): void {
+    void provider.then((api) => {
+      if (!api || stopped || !sessionId) return;
+      const next = api.getPermissionsService(sessionId);
+      if (next === current) return;
+      disposeFormatter?.();
+      disposeFormatter = undefined;
+      current = undefined;
+      if (!next) return;
+      disposeFormatter = next.registerToolInputFormatter("deploy", (input) => {
+        const target = typeof input.target === "string" ? input.target : undefined;
+        if (!target) return undefined;
+        const services = Array.isArray(input.services) ? input.services.length : undefined;
+        return services !== undefined
+          ? `with target ${target} (${services} services)`
+          : `with target ${target}`;
+      });
+      current = next;
+    }).catch((error: unknown) => {
+      console.warn("Permission formatter registration failed", error);
+    });
+  }
 
+  const unsubscribe = pi.events.on("permissions:ready", register);
+  pi.on("session_start", (_event, ctx) => {
+    sessionId = ctx.sessionManager.getSessionId();
+    register(); // Do not await a provider whose session_start may run later.
+  });
   pi.on("session_shutdown", () => {
+    stopped = true;
+    sessionId = undefined;
+    unsubscribe();
     disposeFormatter?.();
     disposeFormatter = undefined;
+    current = undefined;
   });
 }
 ```
 
 Reload note: on `/reload`, the permission-system publishes a fresh service backed by a new registry, so previous registrations are dropped.
-Re-register on every initialization (as above) rather than once globally; the disposer is for explicit teardown within a single load.
+Register against each newly published exact-session service, disposing your own old registration first; repeated notifications for the same instance are no-ops.
+On consumer reload the factory installs fresh listeners; shutdown disposes both the listener and formatter, and delayed import callbacks remain inert.
 
 ##### Recommended practices
 
@@ -277,13 +354,14 @@ See [Subagent Integration](subagent-integration.md) for details.
 
 During `/reload`, all extensions re-initialize.
 The permission-system re-publishes a fresh service at `session_start`; teardown is identity-scoped, so a superseded generation's shutdown only clears the slot when it still owns it and cannot wipe the new service.
-Consumers that re-initialize during reload naturally get the new instance.
-
-Best practice: call `getPermissionsService()` per use rather than caching the reference.
+Consumers must resolve again after publication, not assume a factory-time lookup sees the replacement.
+Use `getPermissionsService(ctx.sessionManager.getSessionId())` per query; registrations need the startup/ready-event reconciliation shown above.
+Reserve the no-argument accessor for deliberately querying the parent/default service.
 
 ### Graceful Degradation
 
-`getPermissionsService()` returns `undefined` when the permission-system extension has not loaded (or has been unloaded).
+`getPermissionsService(sessionId)` returns `undefined` until that session's service is published, and after it is unpublished.
+The no-argument accessor may remain `undefined` in a child even after its own service is published.
 The `import()` throws if the package is not installed.
 Wrap both in `try/catch` + `if` guard as shown in the Quick Start example.
 
@@ -303,11 +381,11 @@ All three broadcasts are best-effort: a throwing listener cannot block permissio
 
 ## Channel Reference
 
-| Channel                 | Direction | When                              | Payload type              |
-| ----------------------- | --------- | --------------------------------- | ------------------------- |
-| `permissions:ready`     | Broadcast | At `session_start`, after publish | `PermissionsReadyEvent`   |
-| `permissions:ui_prompt` | Broadcast | Before active UI prompt           | `PermissionUiPromptEvent` |
-| `permissions:decision`  | Broadcast | After each terminal resolution    | `PermissionDecisionEvent` |
+| Channel                 | Direction | When                                         | Payload type              |
+| ----------------------- | --------- | -------------------------------------------- | ------------------------- |
+| `permissions:ready`     | Broadcast | At `session_start`, after publish            | `PermissionsReadyEvent`   |
+| `permissions:ui_prompt` | Broadcast | Before active UI prompt                      | `PermissionUiPromptEvent` |
+| `permissions:decision`  | Broadcast | When a gate or served ask reports a decision | `PermissionDecisionEvent` |
 
 ---
 
@@ -317,9 +395,10 @@ The permission system emits `permissions:ui_prompt` immediately before it invoke
 This event is for integrations such as notification extensions that should alert only when the user needs to respond to a permission prompt.
 It is not a generic "permission request entered waiting state" event, and it does not imply the prompt will be approved.
 Terminal decisions that resolve without an active UI prompt, such as `hook_approved`, `hook_denied`, or `session_approved`, do not emit this event.
-Non-UI child sessions also do not emit this event when they create a forwarded permission request; the parent UI session emits it immediately before showing the forwarded permission dialog.
+Neither legacy headless nor explicitly delegated interactive children emit this event merely by forwarding; the parent UI session emits it immediately before showing the forwarded permission dialog.
 A forwarded request covered by a serving-session approval is answered without a prompt and emits no event; the event fires only when the parent is actually about to ask the human.
-The matching terminal `permissions:decision` is emitted in the parent session too, so a consumer that reacts to this event has a signal on the same bus telling it the prompt is over.
+When the serving path reports a terminal decision, it emits `permissions:decision` on the parent's bus too.
+Do not rely on that broadcast as a universal completion signal: cancellation, shutdown, or failed settlement may end a request without one; use delegated wait snapshots and process-exit cleanup for blocked activity.
 A shown forwarded prompt can end with `confirmation_unavailable` when its request deadline expires; this uses the existing event shape and resolution value.
 Forwarded prompts that do reach the human are not degraded: the parent emits the child's original `source` and the same `surface`/`value` display projection, plus a populated `forwarding` context identifying the requesting subagent.
 
@@ -382,7 +461,7 @@ The top-level one is the **display** projection — the child's tool name, what 
 
 #### `ForwardedPromptContext`
 
-Present only when the prompt was forwarded from a non-UI subagent.
+Present for forwarded asks from either legacy headless children or explicitly delegated interactive children.
 
 | Field                | Type             | Description                                    |
 | -------------------- | ---------------- | ---------------------------------------------- |
@@ -396,17 +475,20 @@ The stability guarantee is additive, so any can be reintroduced in a later minor
 
 ## Decision Broadcasts
 
-Every terminal permission resolution emits a `permissions:decision` event.
-Hook decisions use `hook_approved` or `hook_denied`; hook asks and deferrals emit only after the session approval or dialog reaches the terminal result.
+Decision-producing gates emit `permissions:decision`; this is not a universal tool-call completion or cancellation channel.
+Active hook decisions use `hook_approved` or `hook_denied`; hook asks and deferrals leave reporting to the subsequent session-approval or dialog path.
+A hook result arriving after its captured lifetime ended emits neither a terminal hook verdict nor a terminal hook approval/denial review entry; execution diagnostics may still be logged.
+The tool-call boundary records the blocked result in its `DecisionAudit` without promising a cancellation broadcast.
 This is useful for dashboards, telemetry, or audit overlays.
 
-A session serving another session's forwarded request emits one too, on its own bus, for every forwarded ask it escalates.
+A session serving another session's forwarded request normally reports its committed escalated decision on its own bus.
 That is what makes a forwarded prompt clearable: the ask is gated in the requesting session — a different process for an out-of-process subagent — so without it the serving session broadcasts a `permissions:ui_prompt` whose outcome never appears.
 A forwarded request the serving session's own policy allows or denies is answered without a prompt and broadcasts nothing, matching the UI-prompt channel.
-A served decision carries a non-null `forwarding` context; the requesting session still emits its own decision when the answer comes back.
+A served decision carries a non-null `forwarding` context; the requester reports its own gate decision when the answer is applied to a still-active request.
 
 The `requestId` is the same id the request's review-log entries carry, and the same one `permissions:ui_prompt` carried if the request reached a prompt — so a prompt and its outcome are joinable, as are two concurrent prompts for the same command.
-A request that reaches a prompt is answered by exactly one terminal event on that prompt's own bus, including when the dialog fails or its forwarded deadline expires.
+A reported outcome on the prompt's own bus uses that same request ID, including normal dialog-failure and deadline outcomes.
+These best-effort broadcasts are not a durable exactly-once completion protocol; consumers must also clear their activity on lifetime teardown or process exit.
 It identifies a permission *request*, not a tool call: one tool call runs several gates and so raises several requests, each with its own id.
 Use the review log's `toolCallId` to join back to the Pi transcript.
 
@@ -456,20 +538,11 @@ The hooks-first production composition does not emit the rows marked **retained*
 
 ## Ready Event
 
-The extension emits `permissions:ready` at `session_start`, right after the service is published — so a consumer reacting to it can immediately resolve `getPermissionsService()`.
-It fires once per `session_start` (including `/reload`).
+Each permission-system instance emits `permissions:ready` at `session_start`, after publishing its exact-session service (including on `/reload`).
+Resolve `getPermissionsService(sessionId)` with the current context's ID; a child's event does not select a parent/default service and does not imply `connectDelegation` has succeeded.
+The provider may publish before or after the consumer's own startup handler, so use both triggers in the [wiring example](#end-to-end-wiring) and never await a later lifecycle handler.
 
-The payload is intentionally empty (`Record<string, never>`): the channel is a pure readiness signal.
+The payload is intentionally empty (`Record<string, never>`): the channel announces publication, not cross-process permission readiness.
 It carries no `protocolVersion` — the broadcast contract is defined by the published types plus package semver.
 
-```typescript
-pi.events.on("permissions:ready", () => {
-  void (async () => {
-    const { getPermissionsService } = await import(
-      "@gotgenes/pi-permission-system"
-    );
-    const permissions = getPermissionsService();
-    // The service is published just before this fires — resolve it now.
-  })();
-});
-```
+Keep readiness listeners scoped to your extension instance and dispose them during shutdown, as the complete example does.

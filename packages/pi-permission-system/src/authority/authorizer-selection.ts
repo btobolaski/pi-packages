@@ -76,6 +76,7 @@ export class AuthorizerSelection
    * activation, so link resolution is deferred to the session's first ask.
    */
   activate(ctx: ExtensionContext): void {
+    this.deps.promptQueue.bind(ctx.sessionManager.getSessionId());
     this.authority = selectAuthorizer(ctx, this.deps);
   }
 

@@ -14,7 +14,10 @@ import { AccessPath } from "#src/access-intent/access-path";
 import type { GateDescriptor } from "#src/handlers/gates/descriptor";
 import { isGateDescriptor } from "#src/handlers/gates/descriptor";
 import { describePathGate } from "#src/handlers/gates/path";
-import type { ToolCallContext } from "#src/handlers/gates/types";
+import {
+  type ToolCallContext,
+  UNINTERRUPTED_REQUEST,
+} from "#src/handlers/gates/types";
 import {
   pathFlavorForPlatform,
   posixPathFlavor,
@@ -37,6 +40,7 @@ function makeTcc(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
     input: { path: ".env" },
     toolCallId: "tc-1",
     cwd: "/test/project",
+    lifetime: UNINTERRUPTED_REQUEST,
     ...overrides,
   };
 }

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import { FORWARDED_PERMISSION_TIMEOUT_DECISION } from "#src/authority/permission-forwarding";
-import type { GateBypass } from "#src/handlers/gates/descriptor";
+import type { GateBypass, GateResult } from "#src/handlers/gates/descriptor";
 import type { PermissionDecisionEvent } from "#src/permission-events";
 import { EXTENSION_TAG } from "#src/presentation/agent-renderer";
 import { SessionApproval } from "#src/session-approval";
@@ -11,6 +12,106 @@ import { makeCheckResult } from "#test/helpers/handler-fixtures";
 import { makePromptPayload } from "#test/helpers/prompt-details-fixtures";
 
 // ── GateRunner — descriptor path ───────────────────────────────────────────
+
+describe("GateRunner — cancellation checkpoints", () => {
+  it.each<GateResult>([
+    null,
+    makeDescriptor(),
+    { action: "allow", decidedBy: { kind: "infrastructure_read" } },
+  ])("blocks a pre-cancelled gate before any side effects (%#)", async (gate) => {
+    const { runner, deps } = makeGateRunner();
+    const signal = AbortSignal.abort();
+    expect(
+      await runner.run(gate, null, {
+        signal,
+        isActive: () => !signal.aborted,
+      }),
+    ).toEqual({ action: "block", reason: "Permission request cancelled" });
+    expect(deps.resolve).not.toHaveBeenCalled();
+    expect(deps.escalate).not.toHaveBeenCalled();
+    expect(deps.reporter.emitDecision).not.toHaveBeenCalled();
+    expect(deps.reporter.writeReviewLog).not.toHaveBeenCalled();
+    expect(deps.recordSessionApproval).not.toHaveBeenCalled();
+  });
+
+  it("forwards the original signal and rejects a late session approval", async () => {
+    const prompt = Promise.withResolvers<PermissionPromptDecision>();
+    const controller = new AbortController();
+    const { runner, deps } = makeGateRunner({
+      resolveResult: makeCheckResult({ state: "ask" }),
+      escalate: vi.fn(() => prompt.promise),
+    });
+    const pending = runner.run(
+      makeDescriptor({
+        sessionApproval: SessionApproval.single("read", "*"),
+      }),
+      null,
+      {
+        signal: controller.signal,
+        isActive: () => !controller.signal.aborted,
+      },
+    );
+    expect(vi.mocked(deps.escalate).mock.calls[0]?.[0].requestSignal).toBe(
+      controller.signal,
+    );
+    controller.abort();
+    prompt.resolve({
+      approved: true,
+      state: "approved_for_session",
+      decidedBy: DECIDED_BY_HUMAN,
+    });
+    expect(await pending).toEqual({
+      action: "block",
+      reason: "Permission request cancelled",
+    });
+    expect(deps.reporter.emitDecision).not.toHaveBeenCalled();
+    expect(deps.recordSessionApproval).not.toHaveBeenCalled();
+  });
+
+  it("rechecks lifetime after the gate resolves without prompting", async () => {
+    const controller = new AbortController();
+    const { runner, deps } = makeGateRunner();
+    const pending = runner.run(makeDescriptor(), null, {
+      signal: controller.signal,
+      isActive: () => !controller.signal.aborted,
+    });
+    controller.abort();
+    expect(await pending).toEqual({
+      action: "block",
+      reason: "Permission request cancelled",
+    });
+    expect(deps.escalate).not.toHaveBeenCalled();
+    expect(deps.reporter.emitDecision).not.toHaveBeenCalled();
+    expect(deps.recordSessionApproval).not.toHaveBeenCalled();
+  });
+
+  it("rechecks lifetime immediately before recording a session grant", async () => {
+    const controller = new AbortController();
+    const { runner, deps } = makeGateRunner({
+      resolveResult: makeCheckResult({ state: "ask" }),
+      escalate: vi.fn().mockResolvedValue({
+        approved: true,
+        state: "approved_for_session",
+        decidedBy: DECIDED_BY_HUMAN,
+      }),
+      reporter: { emitDecision: vi.fn(() => controller.abort()) },
+    });
+    expect(
+      await runner.run(
+        makeDescriptor({
+          sessionApproval: SessionApproval.single("read", "*"),
+        }),
+        null,
+        {
+          signal: controller.signal,
+          isActive: () => !controller.signal.aborted,
+        },
+      ),
+    ).toEqual({ action: "block", reason: "Permission request cancelled" });
+    expect(deps.reporter.emitDecision).toHaveBeenCalledOnce();
+    expect(deps.recordSessionApproval).not.toHaveBeenCalled();
+  });
+});
 
 describe("GateRunner — descriptor path", () => {
   it("returns allow and emits policy_allow when policy is allow", async () => {

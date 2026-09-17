@@ -115,6 +115,49 @@ describe("PreToolUseHookGate", () => {
     return { gate, reporter, runHooks };
   }
 
+  it.each([
+    "allow",
+    "deny",
+  ] as const)("does not report a late %s after cancellation", async (decision) => {
+    const result: MergedHookDecision = {
+      decision,
+      reasons: ["late hook verdict"],
+      diagnostics: [
+        {
+          decision: "defer",
+          status: "invalid_output",
+          exitCode: 0,
+          timedOut: false,
+          hasStderr: true,
+        },
+      ],
+    };
+    const { gate, reporter, runHooks } = makeGate(result);
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<MergedHookDecision>();
+    runHooks.mockImplementationOnce(() => {
+      entered.resolve(undefined);
+      return release.promise;
+    });
+    const controller = new AbortController();
+    const tcc = makeTcc({
+      lifetime: {
+        signal: controller.signal,
+        isActive: () => !controller.signal.aborted,
+      },
+    });
+    const pending = gate.evaluate(tcc, makeCtx());
+    await entered.promise;
+    controller.abort();
+    release.resolve(result);
+    expect(await pending).toEqual({ action: "continue" });
+    expect(reporter.emitDecision).not.toHaveBeenCalled();
+    expect(reporter.writeReviewLog).toHaveBeenCalledExactlyOnceWith(
+      "permission_request.hook_diagnostic",
+      expect.objectContaining({ diagnostics: result.diagnostics }),
+    );
+  });
+
   it("short-circuits with allow and records hook provenance", async () => {
     const { gate, reporter, runHooks } = makeGate({
       decision: "allow",

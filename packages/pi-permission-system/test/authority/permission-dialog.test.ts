@@ -6,6 +6,7 @@ import {
   type PermissionDecisionUi,
   requestPermissionDecisionFromUi,
 } from "#src/authority/permission-dialog";
+import { ForwardedPermissionDeadlineExpiredError } from "#src/authority/permission-forwarding";
 import { makeForwardingDeadline } from "#test/helpers/forwarding-fixtures";
 
 describe("isPermissionDecisionState", () => {
@@ -274,7 +275,7 @@ describe("requestPermissionDecisionFromUi", () => {
         select: vi.fn(),
         input: vi.fn(),
       };
-      controller.abort();
+      controller.abort(new ForwardedPermissionDeadlineExpiredError());
 
       await expect(
         requestPermissionDecisionFromUi(ui, "Title", "Message", {
@@ -306,7 +307,7 @@ describe("requestPermissionDecisionFromUi", () => {
       });
       await vi.waitFor(() => expect(select).toHaveBeenCalledTimes(2));
 
-      controller.abort();
+      controller.abort(new ForwardedPermissionDeadlineExpiredError());
       scope.resolve(undefined);
 
       await rejection;
@@ -328,7 +329,7 @@ describe("requestPermissionDecisionFromUi", () => {
       });
       await vi.waitFor(() => expect(input).toHaveBeenCalledOnce());
 
-      controller.abort();
+      controller.abort(new ForwardedPermissionDeadlineExpiredError());
       reason.resolve("late reason");
 
       await rejection;

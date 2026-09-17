@@ -6,7 +6,10 @@ import type {
 } from "#src/handlers/gates/descriptor";
 import { isGateBypass, isGateDescriptor } from "#src/handlers/gates/descriptor";
 import { describeExternalDirectoryGate } from "#src/handlers/gates/external-directory";
-import type { ToolCallContext } from "#src/handlers/gates/types";
+import {
+  type ToolCallContext,
+  UNINTERRUPTED_REQUEST,
+} from "#src/handlers/gates/types";
 import { pathFlavorForPlatform, win32PathFlavor } from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 import type { ScopedPermissionResolver } from "#src/permission-resolver";
@@ -23,6 +26,7 @@ function makeTcc(overrides: Partial<ToolCallContext> = {}): ToolCallContext {
     input: { path: "/outside/project/file.ts" },
     toolCallId: "tc-1",
     cwd: "/test/project",
+    lifetime: UNINTERRUPTED_REQUEST,
     ...overrides,
   };
 }

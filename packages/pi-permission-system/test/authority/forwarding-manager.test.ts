@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { DelegationControlServer } from "#src/authority/delegation-control";
 import { ForwardingManager } from "#src/authority/forwarding-manager";
 import {
   type ServingAnnouncer,
@@ -9,6 +10,7 @@ import type { SubagentDetector } from "#src/authority/subagent-detection";
 // ── Mocks ─────────────────────────────────────────────────────────────────
 
 const mockProcessInbox = vi.fn((): Promise<void> => Promise.resolve());
+const mockCheckPending = vi.fn();
 const mockIsSubagent = vi.fn((): boolean => false);
 const mockReview = vi.fn();
 
@@ -25,7 +27,7 @@ function makeCtx(overrides: { hasUI?: boolean; sessionId?: string } = {}) {
 }
 
 function makeForwarder() {
-  return { processInbox: mockProcessInbox };
+  return { processInbox: mockProcessInbox, checkPending: mockCheckPending };
 }
 
 function makeDetection(): SubagentDetector {
@@ -37,11 +39,15 @@ function makeAnnouncer() {
   return { markServing: vi.fn(), clearServing: vi.fn() };
 }
 
-function makeManager(serving: ServingAnnouncer = new ServingSessionRegistry()) {
+function makeManager(
+  serving: ServingAnnouncer = new ServingSessionRegistry(),
+  control?: Pick<DelegationControlServer, "process" | "revokeAll">,
+) {
   return new ForwardingManager({
     detection: makeDetection(),
     forwarder: makeForwarder(),
     serving,
+    ...(control ? { control } : {}),
     logger: { review: mockReview, debug: vi.fn() },
   });
 }
@@ -51,18 +57,40 @@ function makeManager(serving: ServingAnnouncer = new ServingSessionRegistry()) {
 describe("ForwardingManager", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.stubEnv("PI_PERMISSION_DELEGATION_REQUIRED", undefined);
     mockIsSubagent.mockReset();
     mockIsSubagent.mockReturnValue(false);
     mockProcessInbox.mockReset();
     mockProcessInbox.mockResolvedValue(undefined);
+    mockCheckPending.mockReset();
     mockReview.mockReset();
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     vi.useRealTimers();
   });
 
   describe("stop()", () => {
+    it("an old drain cannot reset the replacement drain's busy flag", async () => {
+      const first = Promise.withResolvers<void>(); // eslint-disable-line @typescript-eslint/no-invalid-void-type -- deferred cleanup
+      const second = Promise.withResolvers<void>(); // eslint-disable-line @typescript-eslint/no-invalid-void-type -- deferred cleanup
+      mockProcessInbox
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(second.promise);
+      const manager = makeManager();
+      manager.start(makeCtx());
+      await vi.advanceTimersByTimeAsync(250);
+      manager.stop();
+      manager.start(makeCtx());
+      await vi.advanceTimersByTimeAsync(250);
+      first.resolve();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(mockProcessInbox).toHaveBeenCalledTimes(2);
+      second.resolve();
+      manager.stop();
+    });
+
     it("is a no-op when not started", () => {
       const manager = makeManager();
       expect(() => manager.stop()).not.toThrow();
@@ -82,6 +110,28 @@ describe("ForwardingManager", () => {
   });
 
   describe("start()", () => {
+    it("never advertises or polls for a delegation-required interactive child", async () => {
+      const serving = makeAnnouncer();
+      const control = { process: vi.fn(), revokeAll: vi.fn() };
+      const checkPending = vi.fn();
+      const manager = new ForwardingManager({
+        detection: makeDetection(),
+        forwarder: { processInbox: mockProcessInbox, checkPending },
+        serving,
+        control,
+        delegationRequired: true,
+        logger: { review: mockReview, debug: vi.fn() },
+      });
+      manager.start(makeCtx({ hasUI: true }));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(serving.markServing).not.toHaveBeenCalled();
+      expect(mockProcessInbox).not.toHaveBeenCalled();
+      expect(checkPending).not.toHaveBeenCalled();
+      expect(control.process).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+      manager.stop();
+    });
+
     it("does not start polling when hasUI is false", async () => {
       const manager = makeManager();
       const ctx = makeCtx({ hasUI: false });
@@ -137,7 +187,10 @@ describe("ForwardingManager", () => {
       manager.start(ctx);
 
       await vi.advanceTimersByTimeAsync(250);
-      expect(mockProcessInbox).toHaveBeenCalledWith(ctx);
+      expect(mockProcessInbox).toHaveBeenCalledWith(
+        ctx,
+        expect.any(AbortSignal),
+      );
     });
 
     it("is idempotent — calling start() twice does not create a second timer", async () => {
@@ -160,7 +213,59 @@ describe("ForwardingManager", () => {
 
       await vi.advanceTimersByTimeAsync(250);
       // The process call should use the newer context.
-      expect(mockProcessInbox).toHaveBeenCalledWith(ctx2);
+      expect(mockProcessInbox).toHaveBeenCalledWith(
+        ctx2,
+        expect.any(AbortSignal),
+      );
+    });
+
+    it.each([
+      "control",
+      "pending",
+      "drain",
+    ] as const)("logs a %s failure and continues on the next tick", async (source) => {
+      const control = { process: vi.fn(), revokeAll: vi.fn() };
+      const failure = new Error("transient failure");
+      if (source === "control")
+        control.process.mockImplementationOnce(() => {
+          throw failure;
+        });
+      else if (source === "pending")
+        mockCheckPending.mockImplementationOnce(() => {
+          throw failure;
+        });
+      else mockProcessInbox.mockRejectedValueOnce(failure);
+      const manager = makeManager(undefined, control);
+      manager.start(makeCtx());
+      await vi.advanceTimersByTimeAsync(500);
+      expect(mockReview).toHaveBeenCalledWith(
+        source === "drain"
+          ? "forwarded_permission.drain_error"
+          : "forwarded_permission.control_error",
+        { error: "Error: transient failure" },
+      );
+      expect(control.process).toHaveBeenCalledTimes(2);
+      expect(mockCheckPending).toHaveBeenCalledTimes(
+        source === "control" ? 1 : 2,
+      );
+      expect(mockProcessInbox).toHaveBeenCalledTimes(2);
+      manager.stop();
+    });
+
+    it("services control messages while a human request drain is busy", async () => {
+      mockProcessInbox.mockReturnValue(new Promise<void>(() => undefined));
+      const control = { process: vi.fn(), revokeAll: vi.fn() };
+      const manager = makeManager(undefined, control);
+      const ctx = makeCtx();
+      manager.start(ctx);
+
+      await vi.advanceTimersByTimeAsync(500);
+
+      expect(mockProcessInbox).toHaveBeenCalledOnce();
+      expect(control.process).toHaveBeenCalledTimes(2);
+      expect(control.process).toHaveBeenCalledWith(ctx);
+      manager.stop();
+      expect(control.revokeAll).toHaveBeenCalledOnce();
     });
 
     it("skips a tick while processing is in progress", async () => {

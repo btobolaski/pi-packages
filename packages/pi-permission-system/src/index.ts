@@ -5,6 +5,10 @@ import { buildResolvedIntentFromMatchValues } from "./access-intent/input-normal
 import { AuthorizerRegistry } from "./authority/authorizer-registry";
 import { AuthorizerSelection } from "./authority/authorizer-selection";
 import {
+  DelegationControlClient,
+  DelegationControlServer,
+} from "./authority/delegation-control";
+import {
   ForwardedRequestServer,
   type ServingPolicy,
 } from "./authority/forwarded-request-server";
@@ -14,6 +18,11 @@ import {
 } from "./authority/forwarding-liveness";
 import { ForwardingManager } from "./authority/forwarding-manager";
 import { SerialInteractivePromptQueue } from "./authority/interactive-prompt-queue";
+import {
+  INTERACTIVE_DELEGATION_CAPABILITY,
+  isDelegationRequired,
+  PermissionDelegation,
+} from "./authority/permission-delegation";
 import { PERMISSION_FORWARDING_TIMEOUT_MS } from "./authority/permission-forwarding";
 import { requestPermissionDecision } from "./authority/permission-prompt-component";
 import { PermissionPrompter } from "./authority/permission-prompter";
@@ -59,6 +68,7 @@ import { ZellijTabAlert } from "./zellij-tab-alert";
 
 export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   const agentDir = getAgentDir();
+  const delegationRequired = isDelegationRequired();
   // getPackageDir() is Pi's own install dir; auto-allow it for read-only tools
   // so the agent can read Pi's bundled docs/examples regardless of layout.
   const paths = computeExtensionPaths(agentDir, getPackageDir());
@@ -131,6 +141,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   const servingHeartbeats = new ServingHeartbeatStore({
     forwardingDir: paths.forwardingDir,
     logger,
+    capabilities: [INTERACTIVE_DELEGATION_CAPABILITY],
   });
   // The read side of both channels, routed by how the target was resolved.
   const servingLiveness = new ForwardingLivenessJudge({
@@ -138,7 +149,36 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     heartbeats: servingHeartbeats,
   });
 
+  const delegationControl = new DelegationControlServer({
+    forwardingDir: paths.forwardingDir,
+    logger,
+    canServe: (ctx) =>
+      !delegationRequired &&
+      ctx.hasUI &&
+      !subagentDetection.isSubagent(ctx) &&
+      session.getRuntimeContext()?.sessionManager.getSessionId() ===
+        ctx.sessionManager.getSessionId(),
+  });
+  const delegationClient = new DelegationControlClient({
+    forwardingDir: paths.forwardingDir,
+    logger,
+    heartbeats: servingHeartbeats,
+    timeoutMs: () =>
+      configStore.current().forwardingTimeoutMs ??
+      PERMISSION_FORWARDING_TIMEOUT_MS,
+  });
+  const delegation = new PermissionDelegation(
+    {
+      getContext: () => session.getRuntimeContext(),
+      canonicalizeCwd: (value) =>
+        session.getPathNormalizer().forPath(value).boundaryValue(),
+    },
+    delegationClient,
+    delegationRequired,
+  );
+
   const authorizerSelection = new AuthorizerSelection({
+    ...(delegationRequired ? { delegation } : {}),
     detection: subagentDetection,
     events: pi.events,
     getPromptPreferences: () => ({
@@ -209,6 +249,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     // forwarded resolutions.
     recorder: sessionRules,
     registry: subagentRegistry,
+    delegationControl,
   });
 
   session = new PermissionSession(
@@ -217,6 +258,8 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
       detection: subagentDetection,
       forwarder: requestServer,
       serving: composeServingAnnouncers(servingRegistry, servingHeartbeats),
+      control: delegationControl,
+      delegationRequired,
       logger,
     }),
     permissionManager,
@@ -224,6 +267,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     configStore,
     authorizerSelection,
     hostFlavor,
+    delegationRequired ? delegation : undefined,
   );
 
   // refresh() must run after `session` is assigned: a debug-write IO failure
@@ -249,6 +293,7 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     formatterRegistry,
     accessExtractorRegistry,
     authorizerRegistry,
+    delegation,
   );
 
   // Subscribe to @gotgenes/pi-subagents' child lifecycle events so child
@@ -259,9 +304,10 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
   );
 
   // PermissionServiceLifecycle owns the process-global service publication:
-  // activate() publishes (skipped for registered subagent children — see #302)
-  // and emits ready; teardown() unsubscribes all session listeners and
-  // unpublishes. Deferred to session_start because identifying a child
+  // activate() publishes every exact-session service and emits ready; children
+  // and required delegates do not replace the default parent selection.
+  // teardown() closes delegation, unsubscribes listeners, and unpublishes.
+  // Deferred to session_start because identifying a child
   // requires the session id from ctx, unavailable at factory-init time.
   const serviceLifecycle = new PermissionServiceLifecycle(
     permissionsService,
@@ -329,15 +375,19 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     preToolUseHooks,
   );
 
-  pi.on("session_start", (event, ctx) =>
-    lifecycle.handleSessionStart(event, ctx),
-  );
+  pi.on("session_start", (event, ctx) => {
+    serviceLifecycle.prepare(ctx);
+    return lifecycle.handleSessionStart(event, ctx);
+  });
   pi.on("resources_discover", (event, ctx) =>
     lifecycle.handleResourcesDiscover(event, ctx),
   );
   pi.on("session_shutdown", async () => {
-    await zellijAlert.clear();
-    await lifecycle.handleSessionShutdown();
+    try {
+      await lifecycle.handleSessionShutdown();
+    } finally {
+      await zellijAlert.clear();
+    }
   });
   pi.on("before_agent_start", (event, ctx) => agentPrep.handle(event, ctx));
   pi.on(

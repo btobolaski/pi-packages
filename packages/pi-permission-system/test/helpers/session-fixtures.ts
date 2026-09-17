@@ -16,6 +16,7 @@ import { vi } from "vitest";
 import type { ResolvedAccessIntent } from "#src/access-intent/access-intent";
 import type { AuthorizerSelectionLifecycle } from "#src/authority/authorizer-selection";
 import type { ForwardingController } from "#src/authority/forwarding-manager";
+import type { PermissionDelegation } from "#src/authority/permission-delegation";
 import type { SessionConfigStore } from "#src/config-store";
 import { DEFAULT_EXTENSION_CONFIG } from "#src/extension-config";
 import type { ExtensionPaths } from "#src/extension-paths";
@@ -132,6 +133,7 @@ export function makeRealSession(overrides?: {
   configStore?: SessionConfigStore;
   authorizerSelection?: AuthorizerSelectionLifecycle;
   flavor?: PathFlavor;
+  delegation?: PermissionDelegation;
 }): {
   session: PermissionSession;
   paths: ExtensionPaths;
@@ -162,6 +164,7 @@ export function makeRealSession(overrides?: {
     configStore,
     authorizerSelection,
     flavor,
+    overrides?.delegation,
   );
   return {
     session,

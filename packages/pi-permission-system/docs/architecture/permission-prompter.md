@@ -59,7 +59,16 @@ interface Authorizer {
 ## Relationship to the Authorizer spine
 
 `PermissionPrompter` no longer assembles or holds any UI/forwarding dependency — it receives the already-selected `Authorizer` as a call-time argument from `AuthorizerSelection.prompt(details)`, rather than threading `ExtensionContext` through a `forwarder.requestApproval(ctx, …)` call.
-`AuthorizerSelection` (the rewrite of the former `PromptingGateway`) owns the selection: `selectAuthorizer(ctx, deps)` runs once per session activation and returns a `SelectedAuthority` for that context — the terminal (`LocalUserAuthorizer` when `ctx.hasUI`, `ParentAuthorizer` when the context is a no-UI subagent, `DenyingAuthorizer` otherwise) plus `adjudicatesLocally`, which is false for the relaying `ParentAuthorizer` arm so that node resolves no chain links (one chain per node, ADR 0007 §7).
+`AuthorizerSelection` owns the selection: `selectAuthorizer(ctx, deps)` returns a `SelectedAuthority` whenever the context is activated, including before each tool call.
+Explicit required delegation takes precedence over `ctx.hasUI` and ambient subagent detection:
+
+- A ready binding selects `ParentAuthorizer`, even when the child has its own interactive TUI.
+- A required but unready binding selects `DenyingAuthorizer`; it never falls back to child-local confirmation.
+- Both required-delegation cases set `adjudicatesLocally: false`, so the child resolves no chain links.
+
+Without required delegation, selection remains `LocalUserAuthorizer` for `ctx.hasUI`, `ParentAuthorizer` for a no-UI subagent, and `DenyingAuthorizer` otherwise.
+The ordinary relaying `ParentAuthorizer` also sets `adjudicatesLocally: false` (one chain per node, ADR 0007 §7).
+See [Explicit Interactive Delegation](../subagent-integration.md#explicit-interactive-delegation) for the readiness and binding lifecycle.
 
 ## Wiring
 
@@ -70,6 +79,7 @@ const prompter = new PermissionPrompter({ logger });
 const promptQueue = new SerialInteractivePromptQueue();
 
 const authorizerSelection = new AuthorizerSelection({
+  ...(delegationRequired ? { delegation } : {}),
   detection: subagentDetection,
   events: pi.events,
   getPromptPreferences: () => ({
@@ -80,7 +90,7 @@ const authorizerSelection = new AuthorizerSelection({
   requestPermissionDecision,
   forwardingDir: paths.forwardingDir,
   registry: subagentRegistry,
-  servingRegistry,
+  serving: servingLiveness,
   getForwardingTimeoutMs: () =>
     configStore.current().forwardingTimeoutMs ?? PERMISSION_FORWARDING_TIMEOUT_MS,
   logger,

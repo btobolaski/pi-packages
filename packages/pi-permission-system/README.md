@@ -167,7 +167,12 @@ See [docs/configuration.md](docs/configuration.md) for the complete reference.
 
 ## Subagents
 
-A child runs its own hook with the child session ID, working directory, transcript, and raw tool input.
+Interactive children may opt into parent-owned permission dialogs with `PI_PERMISSION_DELEGATION_REQUIRED=1` and the exact-session `connectDelegation()` handshake.
+They remain TUI sessions but cannot run tools before readiness; missing or retired bindings fail closed without a local fallback.
+The [integration guide](docs/subagent-integration.md#explicit-interactive-delegation) covers activation, reload, cancellation ordering, and observation-only wait snapshots for host activity reporting.
+Shepard/Herdr adapters and live UI verification remain companion responsibilities; this package exposes no approval tool or Herdr-specific event.
+
+Once any required delegation is ready, a child runs its own hook with the child session ID, working directory, transcript, and raw tool input.
 If that hook asks or defers, the request is forwarded to the serving parent's dialog.
 The parent neither reruns the child's hook nor consults `authorizerChain`.
 A session grant can apply to the requesting child or to the whole serving session.

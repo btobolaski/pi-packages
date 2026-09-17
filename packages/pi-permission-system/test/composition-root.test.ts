@@ -26,8 +26,10 @@ import { dirname, join } from "node:path";
 import {
   createEventBus,
   type ExtensionAPI,
+  type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PermissionPromptDecision } from "#src/authority/permission-dialog";
 import {
   createPermissionForwardingLocation,
   type ForwardedPermissionRequest,
@@ -37,13 +39,25 @@ import { getServingSessionRegistry } from "#src/authority/serving-registry";
 import { SUBAGENT_CHILD_SESSION_CREATED } from "#src/authority/subagent-lifecycle-events";
 import { getSubagentSessionRegistry } from "#src/authority/subagent-registry";
 import { getGlobalConfigPath } from "#src/config-paths";
+import { DecisionAudit } from "#src/decision-audit";
+import { GateDecisionReporter } from "#src/decision-reporter";
 import { DEFAULT_EXTENSION_CONFIG } from "#src/extension-config";
+import { PreToolUseHookGate } from "#src/handlers/gates/pre-tool-use-hook-gate";
+import * as hookRunner from "#src/hook-runner";
+import type { MergedHookDecision } from "#src/hook-types";
 import piPermissionSystemExtension from "#src/index";
 import { PERMISSIONS_READY_CHANNEL } from "#src/permission-events";
-import { getPermissionsService } from "#src/service";
+import { getPermissionsService, type PendingDelegatedWait } from "#src/service";
 import { ZellijTabAlert } from "#src/zellij-tab-alert";
-import { publishServingHeartbeat } from "#test/helpers/forwarding-fixtures";
+import {
+  publishServingHeartbeat,
+  stubNoSubagentEnvironment,
+} from "#test/helpers/forwarding-fixtures";
 import { makeFakePi } from "#test/helpers/make-fake-pi";
+
+vi.mock("#src/hook-runner", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("#src/hook-runner")>()),
+}));
 
 const SERVICE_KEY = Symbol.for("@gotgenes/pi-permission-system:service");
 const SUBAGENT_REGISTRY_KEY = Symbol.for(
@@ -65,6 +79,7 @@ const EXPECTED_HANDLERS = [
 let agentDir: string;
 
 beforeEach(() => {
+  stubNoSubagentEnvironment();
   agentDir = mkdtempSync(join(tmpdir(), "pi-perm-comp-root-"));
   vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
 });
@@ -452,7 +467,7 @@ describe("out-of-process forwarding liveness", () => {
 });
 
 describe("shutdown teardown chain", () => {
-  it("awaits the shared Zellij alert cleanup before lifecycle teardown", async () => {
+  it("tears down permissions before awaiting the shared Zellij alert cleanup", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-perm-alert-shutdown-cwd-"));
     const clearGate = Promise.withResolvers<void>(); // eslint-disable-line @typescript-eslint/no-invalid-void-type -- Promise.withResolvers<void> is valid; rule does not allow void in generic fn call type args
     const clearSpy = vi
@@ -466,7 +481,7 @@ describe("shutdown teardown chain", () => {
       const shutdown = pi.fire("session_shutdown");
       await vi.waitFor(() => expect(clearSpy).toHaveBeenCalledOnce());
 
-      expect(getPermissionsService()).toBeDefined();
+      expect(getPermissionsService()).toBeUndefined();
       clearGate.resolve();
       await shutdown;
       expect(getPermissionsService()).toBeUndefined();
@@ -1463,5 +1478,404 @@ describe("dialog fallback ignores yolo and configured policy", () => {
 
     expect(outcome.blocked).toBe(false);
     expect(outcome.prompts).toHaveLength(1);
+  });
+});
+
+describe("explicit interactive delegation — production path", () => {
+  const instances: ReturnType<typeof makeFakePi>[] = [];
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(async () => {
+    for (const pi of instances.splice(0).reverse())
+      await pi.fire("session_shutdown");
+    vi.restoreAllMocks();
+  });
+
+  interface Dialog {
+    handleInput(key: string): void;
+    render(width: number): string[];
+  }
+  type DialogFactory = (
+    tui: { requestRender(): void },
+    theme: {
+      fg(color: string, text: string): string;
+      bg(color: string, text: string): string;
+    },
+    keys: { matches(data: string, action: string): boolean },
+    done: (decision: PermissionPromptDecision) => void,
+  ) => Dialog;
+
+  async function harness() {
+    writeGlobalConfig({
+      permission: { "*": "allow", demo: "ask" },
+      doublePressToConfirm: false,
+    });
+    const dialogs: Dialog[] = [];
+    let active = 0;
+    let maximumActive = 0;
+    const parentTurn = new AbortController();
+    const parentPi = makeFakePi({ toolNames: ["demo"] });
+    vi.stubEnv("PI_PERMISSION_DELEGATION_REQUIRED", undefined);
+    piPermissionSystemExtension(parentPi as unknown as ExtensionAPI);
+    instances.push(parentPi);
+    const base = makeBaseCtx(agentDir, "delegating-parent") as ExtensionContext;
+    const parentCtx = {
+      ...base,
+      mode: "tui",
+      signal: parentTurn.signal,
+      ui: {
+        ...base.ui,
+        getToolsExpanded: () => false,
+        setToolsExpanded: () => {},
+        custom: vi.fn(
+          (factory: DialogFactory) =>
+            new Promise<PermissionPromptDecision>((resolve) => {
+              active++;
+              maximumActive = Math.max(maximumActive, active);
+              const dialog = factory(
+                { requestRender: () => {} },
+                { fg: (_c, text) => text, bg: (_c, text) => text },
+                { matches: () => false },
+                (decision) => {
+                  active--;
+                  resolve(decision);
+                },
+              );
+              dialogs.push(dialog);
+            }),
+        ),
+      },
+    } as unknown as ExtensionContext;
+    await fireSessionStart(parentPi, parentCtx);
+    const parentService = getPermissionsService("delegating-parent")!;
+
+    async function child(id: string, connect = true) {
+      const cwd = join(agentDir, id);
+      mkdirSync(cwd, { recursive: true });
+      vi.stubEnv("PI_PERMISSION_DELEGATION_REQUIRED", "1");
+      const pi = makeFakePi({ toolNames: ["demo"] });
+      piPermissionSystemExtension(pi as unknown as ExtensionAPI);
+      instances.push(pi);
+      vi.stubEnv("PI_PERMISSION_DELEGATION_REQUIRED", undefined);
+      const turn = new AbortController();
+      const childBase = makeBaseCtx(cwd, id) as ExtensionContext;
+      const forbidden = vi.fn(() => {
+        throw new Error("Child must never open permission UI");
+      });
+      const ctx = {
+        ...childBase,
+        mode: "tui",
+        signal: turn.signal,
+        ui: {
+          ...childBase.ui,
+          select: forbidden,
+          input: forbidden,
+          custom: forbidden,
+        },
+      } as unknown as ExtensionContext;
+      await fireSessionStart(pi, ctx);
+      const service = getPermissionsService(id)!;
+      const snapshots: (readonly PendingDelegatedWait[])[] = [];
+      service.subscribeDelegatedWaits((pending) => snapshots.push(pending));
+      const identity = {
+        parentSessionId: "delegating-parent",
+        childSessionId: id,
+        childCwd: cwd,
+        agentName: "configured-worker",
+      };
+      if (connect) {
+        const ready = service.connectDelegation(identity);
+        await vi.advanceTimersByTimeAsync(500);
+        await ready;
+      }
+      let executions = 0;
+      async function call() {
+        const result = (await pi.fire(
+          "tool_call",
+          {
+            toolName: "demo",
+            toolCallId: "reused-sdk-call-id",
+            input: { text: "界".repeat(200) },
+          },
+          ctx,
+        )) as { block?: boolean; reason?: string } | undefined;
+        if (!result?.block) executions++;
+        return result;
+      }
+      return {
+        pi,
+        ctx,
+        turn,
+        service,
+        identity,
+        snapshots,
+        forbidden,
+        call,
+        executions: () => executions,
+      };
+    }
+    return {
+      parentPi,
+      parentCtx,
+      parentTurn,
+      parentService,
+      dialogs,
+      child,
+      maximumActive: () => maximumActive,
+    };
+  }
+
+  it("fails closed before hooks, then preserves terminal hook authority after readiness", async () => {
+    const f = await harness();
+    const c = await f.child("unbound-child", false);
+    const hook = vi
+      .spyOn(PreToolUseHookGate.prototype, "evaluate")
+      .mockResolvedValue({ action: "allow" });
+    expect((await c.call())?.block).toBe(true);
+    expect(hook).not.toHaveBeenCalled();
+    const connecting = c.service.connectDelegation(c.identity);
+    await vi.advanceTimersByTimeAsync(500);
+    await connecting;
+    await c.call();
+    expect(c.executions()).toBe(1);
+    hook.mockResolvedValue({ action: "block", reason: "hook says no" });
+    expect((await c.call())?.reason).toBe("hook says no");
+    expect(c.executions()).toBe(1);
+    expect(f.dialogs).toHaveLength(0);
+    expect(c.forbidden).not.toHaveBeenCalled();
+    expect(c.pi.setActiveTools).not.toHaveBeenCalled();
+    expect(getServingSessionRegistry().isServing("unbound-child")).toBe(false);
+  });
+
+  it.each([
+    "once",
+    "child",
+    "serving",
+    "reason",
+  ] as const)("routes %s through the real parent TUI and preserves grant ownership", async (choice) => {
+    const f = await harness();
+    const c = await f.child("interactive-child");
+    const first = c.call();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(c.snapshots.at(-1)).toHaveLength(1);
+    expect(f.dialogs).toHaveLength(1);
+    expect(f.dialogs[0].render(120).join("\n")).toContain("configured-worker");
+    f.parentTurn.abort(); // Unrelated parent model-turn cancellation is not child cancellation.
+    const keys =
+      choice === "once"
+        ? ["y"]
+        : choice === "reason"
+          ? ["r", "try later", "\r"]
+          : choice === "child"
+            ? ["s", "\r"]
+            : ["s", "\u001b[B", "\r"];
+    for (const key of keys) f.dialogs[0].handleInput(key);
+    await vi.advanceTimersByTimeAsync(500);
+    const result = await first;
+    expect(c.executions()).toBe(choice === "reason" ? 0 : 1);
+    if (choice === "reason") expect(result?.reason).toContain("try later");
+    expect(c.snapshots.at(-1)).toEqual([]);
+    expect(
+      c.service.checkPermission("demo", undefined, "configured-worker").state,
+    ).toBe(choice === "child" ? "allow" : "ask");
+    expect(
+      f.parentService.checkPermission("demo", undefined, "configured-worker")
+        .state,
+    ).toBe(choice === "serving" ? "allow" : "ask");
+    if (choice === "child" || choice === "serving") {
+      await vi.advanceTimersByTimeAsync(0);
+      const again = c.call();
+      await vi.advanceTimersByTimeAsync(500);
+      await again;
+      expect(c.executions()).toBe(2);
+      expect(f.dialogs).toHaveLength(1);
+    }
+    expect(c.forbidden).not.toHaveBeenCalled();
+    expect(c.pi.setActiveTools).not.toHaveBeenCalled();
+  });
+
+  it("serves another handshake while prompting and serializes two children with a local ask", async () => {
+    const f = await harness();
+    const first = await f.child("first-child");
+    const a = first.call();
+    await vi.advanceTimersByTimeAsync(500);
+    const second = await f.child("second-child");
+    const b = second.call();
+    await vi.advanceTimersByTimeAsync(0);
+    const local = f.parentPi.fire(
+      "tool_call",
+      { toolName: "demo", toolCallId: "local", input: {} },
+      f.parentCtx,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.dialogs).toHaveLength(1);
+    expect(first.snapshots.at(-1)).toHaveLength(1);
+    expect(second.snapshots.at(-1)).toHaveLength(1);
+    f.dialogs[0].handleInput("y");
+    await vi.advanceTimersByTimeAsync(500);
+    await a;
+    expect(first.snapshots.at(-1)).toEqual([]);
+    expect(second.snapshots.at(-1)).toHaveLength(1);
+    f.dialogs[1].handleInput("y");
+    await vi.advanceTimersByTimeAsync(500);
+    await local;
+    f.dialogs[2].handleInput("y");
+    await vi.advanceTimersByTimeAsync(500);
+    await b;
+    expect([first.executions(), second.executions()]).toEqual([1, 1]);
+    expect(f.maximumActive()).toBe(1);
+  });
+
+  it.each([
+    "allow",
+    "deny",
+  ] as const)("blocks a cancelled real hook %s without false terminal reporting", async (decision) => {
+    const f = await harness();
+    const childId = "real-hook-cancel-child";
+    writeProjectConfig(join(agentDir, childId), {
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: "demo",
+            hooks: [{ type: "command", command: "policy-check" }],
+          },
+        ],
+      },
+    });
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<MergedHookDecision>();
+    vi.spyOn(hookRunner, "runPreToolUseHooks").mockImplementationOnce(() => {
+      entered.resolve(undefined);
+      return release.promise;
+    });
+    const c = await f.child(childId);
+    const audit = vi.spyOn(DecisionAudit.prototype, "recordDecision");
+    const review = vi.spyOn(GateDecisionReporter.prototype, "writeReviewLog");
+    const reported = vi.fn();
+    const unsubscribe = c.pi.events.on("permissions:decision", reported);
+    let currentSignal = c.turn.signal;
+    const readSignal = vi.fn(() => currentSignal);
+    Object.defineProperty(c.ctx, "signal", { get: readSignal });
+    const pending = c.call();
+    await entered.promise;
+    currentSignal = new AbortController().signal;
+    c.turn.abort();
+    release.resolve({
+      decision,
+      reasons: ["late hook verdict"],
+      diagnostics: [],
+    });
+    await expect(pending).resolves.toEqual({
+      block: true,
+      reason: "Permission request cancelled",
+    });
+    expect(readSignal).toHaveBeenCalledOnce();
+    expect(c.executions()).toBe(0);
+    expect(f.dialogs).toHaveLength(0);
+    expect(c.forbidden).not.toHaveBeenCalled();
+    expect(
+      c.service.checkPermission("demo", undefined, "configured-worker").state,
+    ).toBe("ask");
+    expect(
+      f.parentService.checkPermission("demo", undefined, "configured-worker")
+        .state,
+    ).toBe("ask");
+    expect(audit).toHaveBeenCalledExactlyOnceWith("block");
+    expect(reported).not.toHaveBeenCalled();
+    expect(review).not.toHaveBeenCalledWith(
+      "permission_request.hook_approved",
+      expect.anything(),
+    );
+    expect(review).not.toHaveBeenCalledWith(
+      "permission_request.blocked",
+      expect.objectContaining({ resolution: "hook_denied" }),
+    );
+    unsubscribe();
+  });
+
+  it("captures the original tool signal before an asynchronous hook", async () => {
+    const f = await harness();
+    const c = await f.child("hook-cancel-child");
+    const hook = Promise.withResolvers<{ action: "allow" }>();
+    vi.spyOn(PreToolUseHookGate.prototype, "evaluate").mockReturnValue(
+      hook.promise,
+    );
+    let currentSignal = c.turn.signal;
+    const readSignal = vi.fn(() => currentSignal);
+    Object.defineProperty(c.ctx, "signal", { get: readSignal });
+    const pending = c.call();
+    currentSignal = new AbortController().signal;
+    c.turn.abort();
+    hook.resolve({ action: "allow" });
+    expect((await pending)?.block).toBe(true);
+    expect(readSignal).toHaveBeenCalledOnce();
+    expect(c.executions()).toBe(0);
+    expect(f.dialogs).toHaveLength(0);
+  });
+
+  it("retires an old parent binding before same-ID replacement starts serving", async () => {
+    const f = await harness();
+    const c = await f.child("reload-child");
+    expect(getPermissionsService()).toBe(f.parentService);
+    const oldBinding = c.service.getDelegationState();
+    const pending = c.call();
+    await vi.advanceTimersByTimeAsync(500);
+    const replacement = makeFakePi({ toolNames: ["demo"] });
+    piPermissionSystemExtension(replacement as unknown as ExtensionAPI);
+    instances.push(replacement);
+    await fireSessionStart(replacement, f.parentCtx);
+    expect(c.service.getDelegationState().status).toBe("unavailable");
+    await expect(pending).resolves.toEqual({
+      block: true,
+      reason: "Delegated permissions are no longer ready",
+    });
+    const ready = c.service.connectDelegation(c.identity);
+    await vi.advanceTimersByTimeAsync(500);
+    const newBinding = await ready;
+    expect(newBinding.delegationId).not.toBe(
+      "delegationId" in oldBinding ? oldBinding.delegationId : undefined,
+    );
+    const replacementService = getPermissionsService("delegating-parent");
+    const clear = vi
+      .spyOn(ZellijTabAlert.prototype, "clear")
+      .mockRejectedValueOnce(new Error("presentation failed"));
+    await expect(f.parentPi.fire("session_shutdown")).rejects.toThrow(
+      "presentation failed",
+    );
+    clear.mockRestore();
+    expect(getPermissionsService("delegating-parent")).toBe(replacementService);
+    const next = c.call();
+    await vi.advanceTimersByTimeAsync(500);
+    f.dialogs.at(-1)!.handleInput("y");
+    await vi.advanceTimersByTimeAsync(500);
+    await next;
+    expect(c.executions()).toBe(1);
+    expect(f.maximumActive()).toBe(1);
+    expect(c.snapshots.at(-1)).toEqual([]);
+  });
+
+  it("cancels active UI and ignores late approval without executing or recording a grant", async () => {
+    const f = await harness();
+    const c = await f.child("cancelled-child");
+    const pending = c.call();
+    await vi.advanceTimersByTimeAsync(500);
+    c.turn.abort();
+    await vi.advanceTimersByTimeAsync(500);
+    expect((await pending)?.block).toBe(true);
+    f.dialogs[0].handleInput("s");
+    f.dialogs[0].handleInput("\u001b[B");
+    f.dialogs[0].handleInput("\r");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(c.executions()).toBe(0);
+    expect(c.snapshots.at(-1)).toEqual([]);
+    expect(
+      c.service.checkPermission("demo", undefined, "configured-worker").state,
+    ).toBe("ask");
+    expect(
+      f.parentService.checkPermission("demo", undefined, "configured-worker")
+        .state,
+    ).toBe("ask");
+    expect(f.maximumActive()).toBe(1);
   });
 });

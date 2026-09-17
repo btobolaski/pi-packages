@@ -93,6 +93,26 @@ describe("servingHeartbeatPath", () => {
 });
 
 describe("ServingHeartbeatStore.markServing", () => {
+  it.each([
+    [".", "%2E"],
+    ["..", "%2E%2E"],
+  ])("keeps dot session %j distinct from literal percent text", (sessionId, encoded) => {
+    const { store } = makeStore({ isProcessAlive: onlyOwnPidAlive });
+    store.markServing(sessionId);
+    store.markServing(encoded);
+    expect(servingHeartbeatPath(forwardingDir, sessionId)).toBe(
+      join(forwardingDir, "serving", `${encoded}.json`),
+    );
+    expect(readRecord(sessionId).sessionId).toBe(sessionId);
+    expect(store.read(sessionId)).toBe("alive");
+    expect(store.getLiveHeartbeat(sessionId)?.sessionId).toBe(sessionId);
+    expect(store.getLiveHeartbeat(encoded)?.sessionId).toBe(encoded);
+    expect([...store.servingIds()].sort()).toEqual([sessionId, encoded].sort());
+    store.clearServing(sessionId);
+    expect(store.read(sessionId)).toBe("absent");
+    expect(store.read(encoded)).toBe("alive");
+  });
+
   it("publishes the session id, the serving process, and the write time", () => {
     const { store } = makeStore();
     store.markServing("sess-1");
@@ -100,6 +120,7 @@ describe("ServingHeartbeatStore.markServing", () => {
       sessionId: "sess-1",
       pid: 4242,
       updatedAt: clock,
+      capabilities: [],
     });
   });
 
@@ -239,6 +260,48 @@ function publishRaw(sessionId: string, contents: string): void {
 const onlyOwnPidAlive = (pid: number): boolean => pid === 4242;
 
 describe("ServingHeartbeatStore.read", () => {
+  it("classifies a live foreign identity at the requested path as absent", () => {
+    publishRecord("session-a", {
+      sessionId: "session-b",
+      capabilities: ["interactive-delegation-v1"],
+    });
+    const isProcessAlive = vi.fn(onlyOwnPidAlive);
+    const { store } = makeStore({ isProcessAlive });
+    expect(store.read("session-a")).toBe("absent");
+    expect(isProcessAlive).not.toHaveBeenCalled();
+  });
+
+  it("does not expose foreign capabilities, while preserving a matching sibling", () => {
+    const capabilities = ["interactive-delegation-v1"];
+    publishRecord("session-a", { sessionId: "session-b", capabilities });
+    publishRecord("sibling", { capabilities });
+    const { store } = makeStore({ isProcessAlive: onlyOwnPidAlive });
+    expect(store.getLiveHeartbeat("session-a")).toBeNull();
+    expect(store.getLiveHeartbeat("sibling")).toEqual({
+      sessionId: "sibling",
+      pid: 4242,
+      updatedAt: clock,
+      capabilities,
+    });
+  });
+
+  it("rejects malformed capabilities before treating a heartbeat as live", () => {
+    publishRaw(
+      "sess-1",
+      JSON.stringify({
+        sessionId: "sess-1",
+        pid: 4242,
+        updatedAt: clock,
+        capabilities: ["interactive-delegation-v1", 42],
+      }),
+    );
+    const isProcessAlive = vi.fn(onlyOwnPidAlive);
+    const { store } = makeStore({ isProcessAlive });
+    expect(store.read("sess-1")).toBe("absent");
+    expect(store.getLiveHeartbeat("sess-1")).toBeNull();
+    expect(isProcessAlive).not.toHaveBeenCalled();
+  });
+
   it("reports absent when the session has published nothing", () => {
     const { store } = makeStore({ isProcessAlive: onlyOwnPidAlive });
     expect(store.read("sess-1")).toBe("absent");
@@ -303,6 +366,13 @@ describe("ServingHeartbeatStore.read", () => {
 });
 
 describe("ServingHeartbeatStore.servingIds", () => {
+  it("does not discover a foreign identity from another session's file", () => {
+    publishRecord("session-a", { sessionId: "session-b" });
+    publishRecord("sibling");
+    const { store } = makeStore({ isProcessAlive: onlyOwnPidAlive });
+    expect(store.servingIds()).toEqual(["sibling"]);
+  });
+
   it("is empty when nothing has been published", () => {
     const { store } = makeStore({ isProcessAlive: onlyOwnPidAlive });
     expect(store.servingIds()).toEqual([]);

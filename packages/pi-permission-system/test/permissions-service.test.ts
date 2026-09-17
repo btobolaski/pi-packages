@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, type Mock, vi } from "vitest";
 import type { AccessIntent } from "#src/access-intent/access-intent";
 import type { AuthorizerRegistrar } from "#src/authority/authorizer-registry";
+import {
+  type DelegationHandshake,
+  PermissionDelegation,
+} from "#src/authority/permission-delegation";
 import { posixPathFlavor } from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 import { LocalPermissionsService } from "#src/permissions-service";
@@ -85,7 +89,7 @@ function makeService(overrides?: {
 }) {
   const resolver = overrides?.resolver ?? makeResolver();
   // The published service always answers against the parent session's cwd.
-  const session = { getPathNormalizer: () => normalizer };
+  const session = { getPathNormalizer: () => normalizer, deactivate: vi.fn() };
   const formatterRegistry =
     overrides?.formatterRegistry ?? makeFormatterRegistry();
   const accessExtractorRegistry =
@@ -98,6 +102,17 @@ function makeService(overrides?: {
     formatterRegistry,
     accessExtractorRegistry,
     authorizerRegistry,
+    new PermissionDelegation(
+      { getContext: () => null, canonicalizeCwd: (value) => value },
+      {
+        connect: vi.fn(),
+        discardBinding: vi.fn(),
+        isBindingLive: () => true,
+        getBindingSignal: () => undefined,
+        close: vi.fn(),
+      },
+      false,
+    ),
   );
   return {
     service,
@@ -265,5 +280,59 @@ describe("registerAuthorizer", () => {
       authorize,
     );
     expect(result).toBe(unsub);
+  });
+});
+
+describe("delegation lifecycle", () => {
+  it("exposes only a validated connection lifecycle, not a decision API", async () => {
+    const handshake: DelegationHandshake = {
+      discardBinding: vi.fn(),
+      isBindingLive: () => true,
+      getBindingSignal: () => undefined,
+      close: vi.fn(),
+      connect: vi.fn<DelegationHandshake["connect"]>(
+        async (identity, delegationId) => ({
+          capability: "interactive-delegation-v1" as const,
+          delegationId,
+          parentSessionId: identity.parentSessionId,
+          childSessionId: identity.childSessionId,
+        }),
+      ),
+    };
+    const resolver = makeResolver();
+    const service = new LocalPermissionsService(
+      resolver,
+      { getPathNormalizer: () => normalizer, deactivate: vi.fn() },
+      makeFormatterRegistry(),
+      makeAccessExtractorRegistry(),
+      makeAuthorizerRegistry(),
+      new PermissionDelegation(
+        {
+          getContext: () => ({
+            cwd: "/test/project",
+            sessionManager: { getSessionId: () => "child" },
+          }),
+          canonicalizeCwd: (value) => normalizer.forPath(value).boundaryValue(),
+        },
+        handshake,
+        true,
+      ),
+    );
+
+    expect(service.getDelegationState()).toEqual({ status: "unbound" });
+    await expect(
+      service.connectDelegation({
+        parentSessionId: "parent",
+        childSessionId: "child",
+        agentName: "worker",
+        childCwd: "/test/project",
+      }),
+    ).resolves.toMatchObject({
+      parentSessionId: "parent",
+      childSessionId: "child",
+    });
+    expect(service.getDelegationState()).toMatchObject({ status: "ready" });
+    expect("recordApproval" in service).toBe(false);
+    expect("approve" in service).toBe(false);
   });
 });

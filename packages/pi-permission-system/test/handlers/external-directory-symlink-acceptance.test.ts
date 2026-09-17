@@ -21,7 +21,10 @@ import {
   isGateDescriptor,
 } from "#src/handlers/gates/descriptor";
 import { describeExternalDirectoryGate } from "#src/handlers/gates/external-directory";
-import type { ToolCallContext } from "#src/handlers/gates/types";
+import {
+  type ToolCallContext,
+  UNINTERRUPTED_REQUEST,
+} from "#src/handlers/gates/types";
 import { pathFlavorForPlatform } from "#src/path/path-flavor";
 import { PathNormalizer } from "#src/path-normalizer";
 import { PermissionResolver } from "#src/permission-resolver";
@@ -72,6 +75,7 @@ function readTcc(): ToolCallContext {
     input: { path: join(linkDir, "file.ts") },
     toolCallId: "tc-1",
     cwd,
+    lifetime: UNINTERRUPTED_REQUEST,
   };
 }
 
@@ -153,6 +157,7 @@ describe("external_directory symlink acceptance (#418)", () => {
         input: { command },
         toolCallId: "tc-2",
         cwd,
+        lifetime: UNINTERRUPTED_REQUEST,
       };
       const normalizer = new PathNormalizer(
         pathFlavorForPlatform(process.platform),

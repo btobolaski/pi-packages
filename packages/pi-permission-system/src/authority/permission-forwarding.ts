@@ -3,6 +3,10 @@ import type { DecisionSource } from "#src/authority/decision-source";
 import type { PermissionUiPromptSource } from "#src/permission-events";
 import type { PromptPayload } from "#src/presentation/prompt-payload";
 import type {
+  DelegationIdentity,
+  INTERACTIVE_DELEGATION_CAPABILITY,
+} from "./permission-delegation";
+import type {
   PermissionDecisionState,
   PermissionPromptDecision,
 } from "./permission-dialog";
@@ -41,7 +45,9 @@ export function isForwardingDeadlineExpired(
 ): boolean {
   return Boolean(
     deadline &&
-      (deadline.signal.aborted ||
+      ((deadline.signal.aborted &&
+        deadline.signal.reason instanceof
+          ForwardedPermissionDeadlineExpiredError) ||
         isForwardingExpiryReached(deadline.expiresAt)),
   );
 }
@@ -166,6 +172,19 @@ export interface ForwardedAccessIntent extends ForwardedAccessFacts {
   };
 }
 
+/**
+ * Explicit delegation facts that turn a forwarded ask into one cancellable
+ * transaction. Its presence is all-or-nothing: readers reject malformed
+ * markers rather than silently treating a required delegate as legacy.
+ */
+export type DelegatedPermissionTransaction = {
+  capability: typeof INTERACTIVE_DELEGATION_CAPABILITY;
+  requestId: string;
+  delegationId: string;
+  identity: DelegationIdentity;
+  expiresAt: number;
+};
+
 export type ForwardedPermissionRequest = {
   id: string;
   createdAt: number;
@@ -174,6 +193,7 @@ export type ForwardedPermissionRequest = {
   requesterSessionId: string;
   targetSessionId: string;
   requesterAgentName: string;
+  delegation?: DelegatedPermissionTransaction;
   /**
    * The child's complete prompt payload (ADR 0011 §2), so the serving node
    * renders the child's own facts under the *parent's* budget rather than
@@ -251,15 +271,16 @@ export function normalizePermissionForwardingSessionId(
 }
 
 /**
- * Make a session id safe to name a path segment.
+ * Make a session, delegation, or request ID safe to name a path component.
  *
- * Exported because the forwarding tree has two layouts keyed by session id —
- * `sessions/<id>/` and the serving-heartbeat records beside it — and a second
- * encoding would be a silent way for the two to disagree about which file
- * belongs to which session.
+ * Shared by session inboxes, serving heartbeats, delegation control paths, and
+ * transaction outcomes so every reader and writer uses the same encoding.
  */
 export function encodeSessionIdForPath(sessionId: string): string {
-  return encodeURIComponent(sessionId);
+  // encodeURIComponent preserves whole dot segments, which path.join collapses.
+  return sessionId === "." || sessionId === ".."
+    ? sessionId.replaceAll(".", "%2E")
+    : encodeURIComponent(sessionId);
 }
 
 export function createPermissionForwardingLocation(

@@ -22,7 +22,9 @@ This is cooperative integration, not a sandbox against another process with the 
 
 ### Adapter startup and reload
 
-1. Keep task delivery and the configured child tools inactive until connection succeeds.
+1. Keep task delivery inactive until connection succeeds.
+   Native tool selections may remain unchanged during initialization; adapters need not hide or deactivate tools.
+   The permission provider blocks required-delegation tool calls before hooks until ready, independently of tool selection.
 2. Register a `permissions:ready` listener during adapter factory setup, and also attempt initialization from the adapter's own `session_start`.
    Either provider/adapter load order must work.
 3. Resolve `getPermissionsService(ctx.sessionManager.getSessionId())`, never the no-argument parent accessor.
@@ -30,9 +32,9 @@ This is cooperative integration, not a sandbox against another process with the 
 4. Start one guarded asynchronous connection per service instance and return from `session_start` without awaiting a later extension's lifecycle handler.
    Pass `{ parentSessionId, childSessionId, agentName, childCwd }` using the assigned parent, actual child context, and configured agent name.
 5. Await `connectDelegation(identity, { signal })` in that separate attempt.
-   Only its `interactive-delegation-v1` acknowledgement permits task delivery and activation of the adapter's configured tools.
-   The permission package never widens that tool set.
-6. On reload, discard the old service reference and subscription, resolve the replacement exact-session service, and establish a fresh binding before reactivation.
+   Only its `interactive-delegation-v1` acknowledgement permits task delivery; it does not approve any tool call.
+   The permission package never widens the adapter's configured tool set.
+6. On reload, discard the old service reference and subscription, resolve the replacement exact-session service, and establish a fresh binding before resuming task delivery.
    Ignore completion from an attempt whose service is no longer current; dispose your own ready-event and wait listeners on shutdown and prevent delayed initialization from reactivating a stopped child.
    A failed connection requires an explicit retry; it never falls back to local UI or an ambient parent ID.
 

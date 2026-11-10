@@ -98,7 +98,7 @@ function buildSettingItems(
       id: "yoloMode",
       label: "Hook bypass mode",
       description:
-        "Pass bypassPermissions as the PreToolUse hook permission mode",
+        "Use bypassPermissions as the hook mode when pi-modal has no ready mode",
       currentValue: toOnOff(config.yoloMode),
       values: ON_OFF,
     },
@@ -106,7 +106,7 @@ function buildSettingItems(
       id: "allowLocalEdits",
       label: "Hook edit mode",
       description:
-        "Pass acceptEdits instead of default as the PreToolUse hook permission mode",
+        "Use acceptEdits as the hook mode when pi-modal has no ready mode and yoloMode is off",
       currentValue: toOnOff(config.allowLocalEdits),
       values: ON_OFF,
     },

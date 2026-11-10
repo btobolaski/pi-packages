@@ -381,13 +381,38 @@ All three broadcasts are best-effort: a throwing listener cannot block permissio
 
 ## Channel Reference
 
-| Channel                 | Direction | When                                         | Payload type              |
-| ----------------------- | --------- | -------------------------------------------- | ------------------------- |
-| `permissions:ready`     | Broadcast | At `session_start`, after publish            | `PermissionsReadyEvent`   |
-| `permissions:ui_prompt` | Broadcast | Before active UI prompt                      | `PermissionUiPromptEvent` |
-| `permissions:decision`  | Broadcast | When a gate or served ask reports a decision | `PermissionDecisionEvent` |
+| Channel                 | Direction           | When                                                     | Payload type                                      |
+| ----------------------- | ------------------- | -------------------------------------------------------- | ------------------------------------------------- |
+| `permissions:ready`     | Broadcast           | At `session_start`, after publish                        | `PermissionsReadyEvent`                           |
+| `permissions:ui_prompt` | Broadcast           | Before active UI prompt                                  | `PermissionUiPromptEvent`                         |
+| `permissions:decision`  | Broadcast           | When a gate or served ask reports a decision             | `PermissionDecisionEvent`                         |
+| `pi-modal:query`        | Request to pi-modal | Before each tool call's hooks, when hooks are configured | [Modal mode query](#optional-pi-modal-mode-query) |
 
 ---
+
+## Optional pi-modal Mode Query
+
+With nonempty `PreToolUse` hook configuration, the permission system emits `pi-modal:query` once per tool call, before hook matching.
+This is an optional request to the companion pi-modal extension, not a permission broadcast or part of this package's published service types.
+The wire shapes are:
+
+```typescript
+type ModalModeQuery = {
+  sessionId: string;
+  respond: (snapshot: unknown) => void;
+};
+type ModalModeSnapshot = Readonly<
+  { sessionId: string; id: string } &
+  ({ ready: true } | { ready: false; reason: string })
+>;
+```
+
+pi-modal must call `respond(snapshot)` synchronously in its listener; the permission system does not wait for asynchronous responses.
+A response is accepted only when its `sessionId` matches the request, `ready === true`, and `id` is a nonempty string.
+The ID is forwarded verbatim, including `auto` and custom names, without caching or translation.
+It describes the current selection, not necessarily the mode used by an in-flight inference.
+Absent pi-modal, no synchronous response, an unavailable mode, or a rejected response uses the [configured fallback mode](configuration.md#hook-input).
+The query is process-local and does not fetch a parent session's mode for a child.
 
 ## UI Prompt Broadcasts
 

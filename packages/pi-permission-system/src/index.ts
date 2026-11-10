@@ -64,6 +64,7 @@ import { PermissionSessionLogger } from "./session-logger";
 import { SessionRules } from "./session-rules";
 import { ToolAccessExtractorRegistry } from "./tool-access-extractor-registry";
 import { ToolInputFormatterRegistry } from "./tool-input-formatter-registry";
+import { toRecord } from "./value-guards";
 import { ZellijTabAlert } from "./zellij-tab-alert";
 
 export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
@@ -366,6 +367,26 @@ export default function piPermissionSystemExtension(pi: ExtensionAPI): void {
     () => configStore.current(),
     reporter,
     process.platform !== "win32",
+    (sessionId) => {
+      let mode: string | undefined;
+      // pi-modal answers synchronously; no response leaves the config fallback.
+      pi.events.emit("pi-modal:query", {
+        sessionId,
+        respond: (snapshot: unknown) => {
+          const response = toRecord(snapshot);
+          // getNonEmptyString trims; mode IDs must remain verbatim.
+          if (
+            response.sessionId === sessionId &&
+            response.ready === true &&
+            typeof response.id === "string" &&
+            response.id.length > 0
+          ) {
+            mode = response.id;
+          }
+        },
+      });
+      return mode;
+    },
   );
   const gates = new PermissionGateHandler(
     session,

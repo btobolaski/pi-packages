@@ -110,6 +110,7 @@ describe("PreToolUseHookGate", () => {
       }),
       reporter,
       false,
+      () => undefined,
       runHooks,
     );
     return { gate, reporter, runHooks };

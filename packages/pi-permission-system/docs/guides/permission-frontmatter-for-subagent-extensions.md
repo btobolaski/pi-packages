@@ -17,7 +17,10 @@ The child hook receives:
 - The child transcript path.
 - The translated Claude Code-compatible tool name.
 - The raw child tool input.
-- The configured hook permission mode.
+- The child session's ready pi-modal selection, or the configured fallback hook permission mode when pi-modal has no ready mode.
+
+`permission_mode` can be an arbitrary custom mode name; do not assume the Claude Code three-value set.
+See [Hook Input](../configuration.md#hook-input) for mode precedence and fallback behavior.
 
 The hook can return `allow`, `deny`, `ask`, or `defer`.
 An unresolved ask is forwarded to the serving parent session's dialog.

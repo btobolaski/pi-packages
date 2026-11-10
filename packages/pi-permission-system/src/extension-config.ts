@@ -18,7 +18,7 @@ export interface PermissionSystemExtensionConfig {
   debugLog: boolean;
   permissionReviewLog: boolean;
   yoloMode: boolean;
-  /** Select the Claude Code acceptEdits mode passed to PreToolUse hooks; does not auto-approve tools. */
+  /** Select the fallback acceptEdits hook mode when pi-modal has no ready mode and yoloMode is false; does not auto-approve tools. */
   allowLocalEdits: boolean;
   /** Mark the serving Zellij tab and Pi pane while a permission dialog is active. */
   zellijTabAlert: boolean;

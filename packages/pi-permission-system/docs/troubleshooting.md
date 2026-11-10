@@ -31,13 +31,14 @@ Exit code `2` is the exception: it blocks the tool and uses standard error as th
 ## `allowLocalEdits` Does Not Approve an Edit
 
 This is intentional.
-`allowLocalEdits` only changes the hook input's `permission_mode` from `default` to `acceptEdits`.
+`allowLocalEdits` only changes the fallback hook `permission_mode` from `default` to `acceptEdits` when pi-modal has no ready mode and `yoloMode` is false.
+A ready pi-modal selection overrides this setting.
 The hook must still return `allow` for the edit to bypass the dialog.
 
 ## `yoloMode` Still Shows Dialogs
 
 This is intentional in this fork.
-`yoloMode` sends `permission_mode: "bypassPermissions"` to hooks but does not auto-approve tool calls.
+`yoloMode` sends `permission_mode: "bypassPermissions"` to hooks only when pi-modal has no ready mode; it does not auto-approve tool calls.
 
 ## Old Web Access Settings Do Nothing
 

@@ -63,8 +63,10 @@ Create `~/.pi/agent/extensions/pi-permission-system/config.json`:
 }
 ```
 
+[pi-modal](https://github.com/btobolaski/pi-modal) is a separate optional companion extension that selects session instruction modes; install and configure it separately.
+Hooks work without it using the configured fallback.
 `allowLocalEdits` does not approve edits.
-It only sets the hook input's `permission_mode` to `acceptEdits`.
+It only selects the fallback hook `permission_mode` of `acceptEdits` when pi-modal has no ready mode and `yoloMode` is false.
 
 ## Hook Protocol
 
@@ -85,6 +87,10 @@ Each matching command runs from the session working directory and receives JSON 
   "transcript_path": "/path/to/session.jsonl"
 }
 ```
+
+`permission_mode` is the current session's ready pi-modal selection, forwarded verbatim (including `auto` and custom names).
+When `PreToolUse` hooks are configured, the extension queries `pi-modal:query` for each tool call; this is the selected mode, not necessarily the mode used by an in-flight inference.
+If pi-modal is not loaded, does not respond, or reports `ready: false`, the fallback is `bypassPermissions` when `yoloMode` is true, otherwise `acceptEdits` when `allowLocalEdits` is true, otherwise `default`.
 
 A hook can return a decision on standard output:
 
@@ -147,19 +153,19 @@ Project configuration loads only for trusted projects.
 A project `hooks` value replaces the complete global hook set.
 Scalar runtime settings use project-over-global replacement.
 
-| Field                    | Purpose                                                               |
-| ------------------------ | --------------------------------------------------------------------- |
-| `hooks`                  | Claude Code-compatible `PreToolUse` commands                          |
-| `allowLocalEdits`        | Send `permission_mode: "acceptEdits"` to hooks                        |
-| `yoloMode`               | Send `permission_mode: "bypassPermissions"` to hooks                  |
-| `doublePressToConfirm`   | Require confirmation of TUI decision hotkeys                          |
-| `zellijTabAlert`         | Mark the serving Zellij tab and Pi pane during dialogs (Zellij 0.44+) |
-| `forwardingTimeoutMs`    | Bound subagent forwarding waits                                       |
-| `promptMaxRows`          | Bound rendered prompt rows                                            |
-| `promptFieldMaxWidth`    | Bound each rendered prompt field                                      |
-| `reviewLogFieldMaxWidth` | Bound each structured review-log value                                |
-| `permissionReviewLog`    | Enable the structured permission review log                           |
-| `debugLog`               | Enable diagnostic logging                                             |
+| Field                    | Purpose                                                                                   |
+| ------------------------ | ----------------------------------------------------------------------------------------- |
+| `hooks`                  | Claude Code-compatible `PreToolUse` commands                                              |
+| `allowLocalEdits`        | Fallback hook mode: `acceptEdits` when pi-modal has no ready mode and `yoloMode` is false |
+| `yoloMode`               | Fallback hook mode: `bypassPermissions` when pi-modal has no ready mode                   |
+| `doublePressToConfirm`   | Require confirmation of TUI decision hotkeys                                              |
+| `zellijTabAlert`         | Mark the serving Zellij tab and Pi pane during dialogs (Zellij 0.44+)                     |
+| `forwardingTimeoutMs`    | Bound subagent forwarding waits                                                           |
+| `promptMaxRows`          | Bound rendered prompt rows                                                                |
+| `promptFieldMaxWidth`    | Bound each rendered prompt field                                                          |
+| `reviewLogFieldMaxWidth` | Bound each structured review-log value                                                    |
+| `permissionReviewLog`    | Enable the structured permission review log                                               |
+| `debugLog`               | Enable diagnostic logging                                                                 |
 
 `allowWebAccess`, `allowedFetchDomains`, `permission`, `piInfrastructureReadPaths`, `shellTools`, and `authorizerChain` are migration compatibility fields rather than production authority.
 `toolInputPreviewMaxLength` and `toolTextSummaryMaxLength` are accepted but ignored; use the prompt rendering limits instead.

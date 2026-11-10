@@ -221,14 +221,14 @@ export const unifiedConfigSchema = z
     }),
     yoloMode: z.boolean().optional().meta({
       description:
-        "Select the bypassPermissions permission mode passed to PreToolUse hooks. This setting does not auto-approve tool calls.",
+        "Select the fallback bypassPermissions hook mode when pi-modal has no ready mode. This setting does not auto-approve tool calls.",
       markdownDescription:
-        'Send `permission_mode: "bypassPermissions"` to PreToolUse hooks. This field does not auto-approve tool calls; the hook must still return `allow`.',
+        'Send `permission_mode: "bypassPermissions"` to PreToolUse hooks only when pi-modal has no ready mode. This field does not auto-approve tool calls; the hook must still return `allow`.',
       default: false,
     }),
     allowLocalEdits: z.boolean().optional().meta({
       description:
-        "Select the acceptEdits permission mode passed to PreToolUse hooks. This setting does not auto-approve tool calls.",
+        "Select the fallback acceptEdits hook mode when pi-modal has no ready mode and yoloMode is false. This setting does not auto-approve tool calls.",
       default: false,
     }),
     zellijTabAlert: z.boolean().optional().meta({

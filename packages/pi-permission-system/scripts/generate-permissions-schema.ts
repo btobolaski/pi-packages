@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/// <reference types="node" />
 // Regenerate schemas/permissions.schema.json from the zod source of truth.
 // Run via `pnpm run gen:schema`. Never edit the JSON by hand — a parity test
 // (test/config-schema.test.ts) fails if the committed file drifts from this.

@@ -556,9 +556,38 @@ describe("service and gate share one formatter registry", () => {
 });
 
 describe("hooks-first tool authority", () => {
-  it("lets a hook allow bypass a configured deny without showing a dialog", async () => {
-    writeGlobalConfig({
+  it.each([
+    {
+      mode: "code review",
+      ready: true,
+      yoloMode: true,
       allowLocalEdits: true,
+      expectedMode: "code review",
+    },
+    {
+      mode: "missing",
+      ready: false,
+      yoloMode: false,
+      allowLocalEdits: true,
+      expectedMode: "acceptEdits",
+    },
+    {
+      mode: undefined,
+      ready: false,
+      yoloMode: false,
+      allowLocalEdits: true,
+      expectedMode: "acceptEdits",
+    },
+  ])("sends $expectedMode to a hook that allows without a dialog (modal: $mode, ready: $ready)", async ({
+    mode,
+    ready,
+    yoloMode,
+    allowLocalEdits,
+    expectedMode,
+  }) => {
+    writeGlobalConfig({
+      allowLocalEdits,
+      yoloMode,
       permission: { demo: "deny" },
       hooks: {
         PreToolUse: [
@@ -567,8 +596,7 @@ describe("hooks-first tool authority", () => {
             hooks: [
               {
                 type: "command",
-                command:
-                  'grep -q \'"permission_mode":"acceptEdits"\' && printf \'%s\' \'{"hookSpecificOutput":{"permissionDecision":"allow"}}\'',
+                command: `grep -q '"permission_mode":"${expectedMode}"' && printf '%s' '{"hookSpecificOutput":{"permissionDecision":"allow"}}'`,
               },
             ],
           },
@@ -577,6 +605,22 @@ describe("hooks-first tool authority", () => {
     });
     const cwd = mkdtempSync(join(tmpdir(), "pi-perm-hook-allow-"));
     const pi = makeFakePi({ toolNames: ["demo"] });
+    const queriedSessions: string[] = [];
+    if (mode !== undefined) {
+      pi.events.on("pi-modal:query", (payload) => {
+        const { sessionId, respond } = payload as {
+          sessionId: string;
+          respond: (snapshot: unknown) => void;
+        };
+        queriedSessions.push(sessionId);
+        respond({
+          sessionId,
+          id: mode,
+          ready,
+          ...(ready ? {} : { reason: "Mode file missing" }),
+        });
+      });
+    }
     piPermissionSystemExtension(pi as unknown as ExtensionAPI);
     const prompts: string[] = [];
     const { ctx } = makeUiCtx(cwd, prompts);
@@ -590,7 +634,76 @@ describe("hooks-first tool authority", () => {
 
     expect(result.block).toBeUndefined();
     expect(prompts).toEqual([]);
+    if (mode !== undefined) {
+      expect(queriedSessions).toEqual(["ui-session"]);
+    }
     rmSync(cwd, { recursive: true, force: true });
+  });
+
+  it("requeries modal selection and ignores malformed or other-session responses", async () => {
+    writeGlobalConfig({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: "demo",
+            hooks: [{ type: "command", command: "policy-check" }],
+          },
+        ],
+      },
+    });
+    const cwd = mkdtempSync(join(tmpdir(), "pi-perm-live-mode-"));
+    const pi = makeFakePi({ toolNames: ["demo"] });
+    let snapshot: unknown;
+    pi.events.on("pi-modal:query", (payload) => {
+      const { respond } = payload as { respond: (snapshot: unknown) => void };
+      respond(snapshot);
+    });
+    const selections = [
+      [{ sessionId: "ui-session", id: "review", ready: true }, "review"],
+      [{ sessionId: "ui-session", id: "auto", ready: true }, "auto"],
+      [
+        { sessionId: "other-session", id: "bypassPermissions", ready: true },
+        "default",
+      ],
+      [{ sessionId: "ui-session", id: 123, ready: true }, "default"],
+      [{ sessionId: "ui-session", id: "", ready: true }, "default"],
+      [
+        { sessionId: "ui-session", id: "bypassPermissions", ready: "true" },
+        "default",
+      ],
+      [null, "default"],
+    ] as const;
+    const runHooks = vi
+      .spyOn(hookRunner, "runPreToolUseHooks")
+      .mockResolvedValue({ decision: "allow", reasons: [], diagnostics: [] });
+    try {
+      piPermissionSystemExtension(pi as unknown as ExtensionAPI);
+      const { ctx } = makeUiCtx(cwd, []);
+      await fireSessionStart(pi, ctx);
+      for (const [response, expectedMode] of selections) {
+        snapshot = response;
+        await pi.fire(
+          "tool_call",
+          {
+            toolName: "demo",
+            toolCallId: String(runHooks.mock.calls.length),
+            input: {},
+          },
+          ctx,
+        );
+        expect(runHooks.mock.lastCall?.[3]).toEqual({
+          session_id: "ui-session",
+          cwd,
+          permission_mode: expectedMode,
+          transcript_path: undefined,
+          useProcessGroup: process.platform !== "win32",
+        });
+      }
+      expect(runHooks).toHaveBeenCalledTimes(selections.length);
+    } finally {
+      runHooks.mockRestore();
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("keeps configured shell-tool aliases dormant in dialog fallback", async () => {

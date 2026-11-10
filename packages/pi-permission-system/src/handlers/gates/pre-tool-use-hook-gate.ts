@@ -33,6 +33,7 @@ export class PreToolUseHookGate implements PreToolUseHookEvaluator {
     private readonly getConfig: () => PermissionSystemExtensionConfig,
     private readonly reporter: DecisionReporter,
     private readonly useProcessGroup: boolean,
+    private readonly getSessionMode: (sessionId: string) => string | undefined,
     private readonly runHooks: PreToolUseHookRunner = runPreToolUseHooks,
   ) {}
 
@@ -46,15 +47,17 @@ export class PreToolUseHookGate implements PreToolUseHookEvaluator {
       return { action: "continue" };
     }
 
+    const sessionId = ctx.sessionManager.getSessionId();
     const requestId = createPermissionRequestId();
     const decision = await this.runHooks(
       matchers,
       tcc.toolName,
       tcc.input,
       {
-        session_id: ctx.sessionManager.getSessionId(),
+        session_id: sessionId,
         cwd: ctx.cwd,
-        permission_mode: deriveHookPermissionMode(config),
+        permission_mode:
+          this.getSessionMode(sessionId) ?? deriveHookPermissionMode(config),
         transcript_path: ctx.sessionManager.getSessionFile(),
         useProcessGroup: this.useProcessGroup,
       },

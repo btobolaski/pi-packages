@@ -144,6 +144,13 @@ Hooks require a POSIX-compatible `sh` on `PATH`; stock Windows without Git Bash,
 `transcript_path` is omitted when Pi does not expose a session file.
 Matching commands run sequentially in configuration order.
 
+`permission_mode` comes from the current session's ready pi-modal selection, including `auto` and arbitrary custom mode names.
+The extension emits `pi-modal:query` with the session ID before each tool call's hooks; it does not cache or translate the response.
+The response describes the selection, not necessarily the mode used by an in-flight inference.
+When pi-modal is absent, does not respond, or reports `ready: false`, the extension falls back to `yoloMode` / `allowLocalEdits` as described below, or `default` when both are false.
+This query is local to the Pi process; it does not inherit a parent session's mode across processes.
+See the [optional pi-modal query contract](cross-extension-api.md#optional-pi-modal-mode-query) for the synchronous request/response shapes and validation.
+
 ### Hook Output and Exit Status
 
 A command can return a decision using the Claude Code `hookSpecificOutput` shape:
@@ -173,16 +180,17 @@ Reasons from results with the winning decision are retained in the terminal mess
 
 ### `allowLocalEdits`
 
-`allowLocalEdits: true` sends `permission_mode: "acceptEdits"` to hooks.
+`allowLocalEdits: true` sends `permission_mode: "acceptEdits"` to hooks only when pi-modal has no ready mode and `yoloMode` is false.
 It does not approve `write` or `edit` calls and does not bypass the dialog.
 
 Default: `false`.
 
 ### `yoloMode`
 
-`yoloMode: true` sends `permission_mode: "bypassPermissions"` to hooks.
+`yoloMode: true` sends `permission_mode: "bypassPermissions"` to hooks only when pi-modal has no ready mode.
 It does not auto-approve an `ask` and does not bypass the dialog by itself.
-When both `yoloMode` and `allowLocalEdits` are true, `bypassPermissions` takes precedence.
+When both `yoloMode` and `allowLocalEdits` are true, `bypassPermissions` takes precedence in the fallback.
+A ready pi-modal selection takes precedence over both settings.
 
 Default: `false`.
 

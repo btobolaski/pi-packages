@@ -19,10 +19,8 @@ export interface HooksConfig {
 
 // Hook I/O matches the Claude Code PreToolUse protocol.
 
-export type HookPermissionMode =
-  | "default"
-  | "acceptEdits"
-  | "bypassPermissions";
+// Ready pi-modal selections are forwarded verbatim, including custom mode names.
+export type HookPermissionMode = string;
 
 export interface PreToolUseHookInput {
   session_id: string;

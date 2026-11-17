@@ -165,8 +165,12 @@ async function runPrompt(
 describe("presentInlinePermissionPrompt", () => {
   it("renders inline (not as an overlay) with the request facts and hotkey labels", () => {
     const { view, captured } = makeFakeView(true);
-    void presentInlinePermissionPrompt(view, "Permission Required", ASK);
-    expect(captured.options).toEqual({ overlay: false });
+    const title = "Permission Required (Subagent)";
+    void presentInlinePermissionPrompt(view, title, ASK);
+    expect(captured.options).toEqual({
+      overlay: false,
+      blocked: { kind: "permission", message: title },
+    });
     const text = captured.component?.render(80).join("\n") ?? "";
     expect(text).toContain("tool : read");
     expect(text).toContain("path : /repo/secret.txt");

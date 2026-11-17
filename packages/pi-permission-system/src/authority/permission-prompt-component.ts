@@ -172,6 +172,10 @@ export function presentInlinePermissionPrompt(
     sessionLabel: options?.sessionLabel ?? DEFAULT_SESSION_LABEL,
     sessionScope: options?.sessionScope,
   };
+  const customOptions = {
+    overlay: false,
+    blocked: { kind: "permission", message: title },
+  } as const;
   return view.ui.custom<UnattributedDecision>(
     (tui, theme, keybindings, done) => {
       const finish = createPromptCompletion(done, view.signal);
@@ -188,7 +192,7 @@ export function presentInlinePermissionPrompt(
         finish,
       );
     },
-    { overlay: false },
+    customOptions,
   );
 }
 
